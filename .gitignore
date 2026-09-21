@@ -1,0 +1,112 @@
+# ==============================================================================
+# FastAPI / Python Core
+# ==============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ==============================================================================
+# Environment Variables & Secrets (CRITICAL for FastAPI)
+# ==============================================================================
+.env
+.env.*
+!.env.example
+.venv
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ==============================================================================
+# Dependency Managers (Locks should usually be committed, but ignore local configs)
+# ==============================================================================
+.pdm-python
+.pdm-build/
+.uv/
+.ropeproject/
+
+# ==============================================================================
+# Testing & Coverage
+# ==============================================================================
+htmlcov/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.pytest_cache/
+.history/
+
+# ==============================================================================
+# Type Checking & Linting
+# ==============================================================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ==============================================================================
+# Databases (SQLite / Local dumps)
+# ==============================================================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ==============================================================================
+# IDEs & Text Editors
+# ==============================================================================
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ==============================================================================
+# Operating System Files
+# ==============================================================================
+.DS_Store
+Thumbs.db
+
+
+# ==============================================================================
+# VoiceCare LK (project-specific)
+# ==============================================================================
+# Patient call audio + transcripts (sensitive health data). Never commit.
+recordings/
+backend/recordings/
+
+# Generated/preview audio from offline dev tools.
+backend/recordings/previews/
+
+# Ad-hoc diagnostic leftovers (scratch, not source).
+collected.txt
+testmap.txt
+backend/collected.txt
+backend/testmap.txt

@@ -1,0 +1,27 @@
+# VoiceCare LK backend -- runtime dependencies
+# (Steps 1-2: telephony + batch transcription)
+
+# -- web framework --
+fastapi==0.136.1
+uvicorn[standard]==0.47.0
+pydantic-settings>=2.7,<4
+
+# -- telephony client --
+requests>=2.32
+
+# -- text-to-speech (Step 3; offline Windows SAPI backend) --
+pyttsx3>=2.90
+
+# -- speech-to-text (Step 2) --
+faster-whisper>=1.0
+
+# -- audio resampling with a real anti-alias filter (Step 3 TTS quality) --
+numpy>=1.26
+scipy>=1.11
+
+# Python 3.13 removed the stdlib `audioop`; this shim restores it.
+audioop-lts>=0.2.1 ; python_version >= "3.13"
+
+# --- test/dev (used by backend/tests) ---
+pytest>=8.3
+httpx>=0.28            # required by fastapi.testclient
