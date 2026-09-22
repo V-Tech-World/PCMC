@@ -1,0 +1,207 @@
+"""
+Records API (Step 6): read the persisted calls + manage patient records.
+
+Auth accepts either the machine X-Api-Key (scripts, the live-test plan) or a
+staff bearer token from the dashboard (Step 9). Role rules follow the README
+role table:
+
+    review / annotate a call -> nurse | doctor | admin
+    close a case             -> doctor | admin
+    manage patients          -> admin
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from app.core.security import AuthContext, require_auth, require_roles
+from app.db import service as db_service
+from app.db.models import Patient
+
+logger = logging.getLogger("voicecare.records")
+
+router = APIRouter(prefix="/records")
+
+
+class PatientUpsert(BaseModel):
+    """Create or update a patient (matched on patient_code)."""
+
+    patient_code: str = Field(min_length=1, max_length=32)
+    name: str = ""
+    phone_number: str = ""
+    diagnosis_category: str = "general"
+    discharge_date: str = ""          # ISO date: YYYY-MM-DD
+    notes: str = ""
+    language_pref: str = "en"         # en | ta | si (Step 10)
+    active: bool = True
+
+
+class CallPatch(BaseModel):
+    """Dashboard workflow fields a nurse/doctor may set on a call row."""
+
+    reviewed: bool | None = None
+    nurse_note: str | None = None
+    close_case: bool = False          # true = doctor closes an escalated case
+
+
+def _record_to_dict(r) -> dict:
+    return {
+        "id": r.id,
+        "provider_call_id": r.provider_call_id,
+        "patient_code": r.patient_code,
+        "phone_number": r.phone_number,
+        "diagnosis_category": r.diagnosis_category,
+        "started_at": r.started_at.isoformat(),
+        "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+        "duration_sec": r.duration_sec,
+        "ended_reason": r.ended_reason,
+        "answers": r.get_answers(),
+        "risk_level": r.risk_level,
+        "risk_score": r.risk_score,
+        "risk_reasons": r.get_risk_reasons(),
+        "findings": r.get_findings(),
+        "alert_status": r.alert_status,
+        "alert_detail": r.alert_detail,
+        "reviewed": r.reviewed,
+        "nurse_note": r.nurse_note,
+        "closed_by": r.closed_by,
+        "closed_at": r.closed_at.isoformat() if r.closed_at else None,
+    }
+
+
+def _patient_to_dict(p: Patient) -> dict:
+    return {
+        "id": p.id,
+        "patient_code": p.patient_code,
+        "name": p.name,
+        "phone_number": p.phone_number,
+        "diagnosis_category": p.diagnosis_category,
+        "discharge_date": p.discharge_date,
+        "notes": p.notes,
+        "language_pref": p.language_pref,
+        "active": p.active,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+    }
+
+
+@router.get("/calls")
+def get_call_records(
+    limit: int = 100,
+    risk_level: str | None = Query(default=None, pattern="^(low|medium|high)$"),
+    patient_code: str | None = None,
+    reviewed: bool | None = None,
+    context: AuthContext = Depends(require_auth),
+) -> dict:
+    """Persisted call rows, newest first (Step 6 TC1 verification)."""
+    rows = db_service.list_calls(
+        limit=max(1, min(limit, 500)),
+        risk_level=risk_level,
+        patient_code=patient_code,
+        reviewed=reviewed,
+    )
+    return {"count": len(rows), "calls": [_record_to_dict(r) for r in rows]}
+
+
+@router.get("/calls/{record_id}")
+def get_call_record(
+    record_id: int, context: AuthContext = Depends(require_auth)
+) -> dict:
+    """One call in full (transcript + assessment) -- the detail view."""
+    row = db_service.get_call(record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No call record with id {record_id}.")
+    return _record_to_dict(row)
+
+
+@router.patch("/calls/{record_id}")
+def patch_call_record(
+    record_id: int,
+    body: CallPatch,
+    context: AuthContext = Depends(require_roles("nurse", "doctor", "admin")),
+) -> dict:
+    """Update the dashboard workflow fields on a call row.
+
+    Marking a case reviewed/annotated is a nurse+ action; closing the case is
+    reserved for a doctor (or admin) per the README role table.
+    """
+    if db_service.get_call(record_id) is None:
+        raise HTTPException(status_code=404, detail=f"No call record with id {record_id}.")
+
+    fields: dict = {}
+    if body.reviewed is not None:
+        fields["reviewed"] = body.reviewed
+    if body.nurse_note is not None:
+        fields["nurse_note"] = body.nurse_note
+    if body.close_case:
+        if not context.allows(("doctor", "admin")):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Closing a case requires doctor or admin "
+                    f"(your role: {context.role})."
+                ),
+            )
+        fields["closed_by"] = context.subject or context.name or "api-key"
+        fields["closed_at"] = datetime.now(timezone.utc)
+        fields["reviewed"] = True
+
+    row = db_service.update_call(record_id, **fields)
+    if row is None:
+        raise HTTPException(status_code=500, detail="Could not update the call record.")
+    logger.info(
+        "Call %s updated by %s: %s", record_id, context.subject or "api-key", list(fields)
+    )
+    return {"status": "updated", "call": _record_to_dict(row)}
+
+
+@router.get("/patients")
+def get_patients(
+    include_inactive: bool = True, context: AuthContext = Depends(require_auth)
+) -> dict:
+    rows = db_service.list_patients(include_inactive=include_inactive)
+    return {"count": len(rows), "patients": [_patient_to_dict(p) for p in rows]}
+
+
+@router.post("/patients", status_code=201)
+def upsert_patient(
+    body: PatientUpsert, context: AuthContext = Depends(require_roles("admin"))
+) -> dict:
+    """Create or update a patient record (matched on patient_code)."""
+    if body.diagnosis_category not in ("general", "surgical", "cardiac"):
+        raise HTTPException(
+            status_code=422,
+            detail="diagnosis_category must be general | surgical | cardiac",
+        )
+    action, patient = db_service.upsert_patient(
+        patient_code=body.patient_code.strip(),
+        name=body.name,
+        phone_number=body.phone_number,
+        diagnosis_category=body.diagnosis_category,
+        discharge_date=body.discharge_date,
+        notes=body.notes,
+        language_pref=body.language_pref,
+        active=body.active,
+    )
+    return {"status": action, "patient": _patient_to_dict(patient)}
+
+
+@router.delete("/patients/{patient_code}")
+def delete_patient(
+    patient_code: str, context: AuthContext = Depends(require_roles("admin"))
+) -> dict:
+    """Remove a patient record. Existing call history is kept."""
+    if not db_service.delete_patient(patient_code):
+        raise HTTPException(
+            status_code=404, detail=f"No patient with code {patient_code!r}."
+        )
+    return {"status": "deleted", "patient_code": patient_code}
+
+
+@router.get("/stats")
+def get_stats(context: AuthContext = Depends(require_auth)) -> dict:
+    """Aggregate counters (dashboard cards)."""
+    return db_service.stats()

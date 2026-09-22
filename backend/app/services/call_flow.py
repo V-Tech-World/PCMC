@@ -23,10 +23,13 @@ import asyncio
 import base64
 import logging
 import time
+from datetime import datetime, timezone
 
 from fastapi import WebSocketDisconnect
 
 from app.core.config import Settings, get_settings
+from app.db import service as db_service
+from app.services import alerts as alerts_service
 from app.services import recordings as recordings_service
 from app.services import stt as stt_service
 from app.services import tts as tts_service
@@ -80,6 +83,8 @@ async def run_call(
     session,
     category: str,
     settings: Settings | None = None,
+    to_number: str = "",
+    patient_code: str | None = None,
 ) -> None:
     """Run the structured dialogue over the live media stream.
 
@@ -92,6 +97,8 @@ async def run_call(
         # for the stream to end and let the api layer save the recording.
         await _drain_until_closed(inbox)
         return
+
+    call_started_at = datetime.now(timezone.utc)
 
     speaker = tts_service.get_speaker()
     transcriber = stt_service.get_transcriber()
@@ -115,11 +122,27 @@ async def run_call(
     question = dialogue.start()
     turn_dir = settings.recordings_dir / f"call_{session.call_id}"
     turn_no = 0
+    # Cost rail (Step 5): hard wall-clock cap. Every answered minute is a
+    # billed provider minute, so the dialogue must never run past this even
+    # if the patient never hangs up and the turns keep flowing.
+    # 0 (or negative) disables the cap.
+    cap = settings.max_call_duration_sec
+    call_deadline = time.monotonic() + cap if cap > 0 else float("inf")
 
     try:
         while question is not None:
             turn_no += 1
             is_final = question.id == FINAL_QUESTION_ID
+            if time.monotonic() >= call_deadline:
+                # Cost rail: the call hit MAX_CALL_DURATION_SEC. Score and log
+                # what was captured so far, then end the call -- we never keep
+                # a billed line open past the cap.
+                logger.warning(
+                    "Max call duration (%.0fs) reached at turn=%d -- ending call",
+                    settings.max_call_duration_sec, turn_no,
+                )
+                _log_assessment(dialogue.assess_risk())
+                raise CallEnded("max call duration reached")
             await speak(websocket, question.text, session, speaker, tx_codec)
             if is_final:
                 # Final open question: fixed window instead of the silence
@@ -222,10 +245,63 @@ async def run_call(
             logger.info("  %s = %r (interpretation=%r)",
                         entry["question_id"], entry["transcript"], entry["interpretation"])
         raise CallEnded("dialogue finished")
-    except CallEnded:
+    except CallEnded as exc:
+        # Step 6 + 7: persist the row and (high risk) send the WhatsApp alert
+        # on EVERY exit path -- normal finish, hangup, max-duration cap.
+        await _persist_and_alert(
+            dialogue, assessment=None, reason=str(exc), session=session,
+            settings=settings, to_number=to_number, patient_code=patient_code,
+            started_at=call_started_at,
+        )
         raise
     except asyncio.CancelledError:
         raise
+
+
+async def _persist_and_alert(
+    dialogue,
+    *,
+    assessment,
+    reason: str,
+    session,
+    settings: Settings,
+    to_number: str,
+    patient_code: str | None,
+    started_at: datetime,
+) -> None:
+    """Save the CallRecord row and fire the HIGH-risk WhatsApp alert.
+
+    Never raises: a persistence/alert problem must not mask the call flow's
+    own CallEnded, and the risk decision is also in the logs.
+    """
+    try:
+        assessment = assessment or dialogue.assess_risk()
+        duration_sec = (datetime.now(timezone.utc) - started_at).total_seconds()
+        record = await asyncio.to_thread(
+            db_service.record_call,
+            dialogue=dialogue,
+            assessment=assessment,
+            provider_call_id=getattr(session, "provider_call_id", "") or session.call_id,
+            to_number=to_number or getattr(session, "dialed_number", ""),
+            patient_code=patient_code,
+            ended_reason=reason,
+            started_at=started_at,
+            duration_sec=duration_sec,
+            database_url=settings.database_url,
+        )
+        if record is None:
+            return
+        status = await asyncio.to_thread(alerts_service.maybe_send_alert, record, settings)
+        await asyncio.to_thread(
+            db_service.attach_alert,
+            record.id,
+            status,
+            detail="",
+            database_url=settings.database_url,
+        )
+        logger.info("Alert status for record %d: %s", record.id, status)
+    except Exception:
+        logger.exception("Persist/alert step failed (risk decision is in the logs)")
 
 
 # ------------------------------------------------------------------ helpers
@@ -240,6 +316,16 @@ async def _transcribe_turn(
     result = await asyncio.to_thread(transcriber.transcribe, wav_path)
     logger.info("turn=%d question=%s transcript=%r", turn_no, question_id, result.text)
     return result.text
+
+
+def _log_assessment(assessment) -> None:
+    """Log a risk assessment consistently (final + hangup/timeout paths)."""
+    logger.info(
+        "Risk assessment: level=%s score=%.0f",
+        assessment.risk_level, assessment.score,
+    )
+    for reason in assessment.reasons:
+        logger.info("  risk: %s", reason)
 
 
 async def _drain_until_closed(inbox: asyncio.Queue) -> None:

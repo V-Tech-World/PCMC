@@ -92,6 +92,65 @@ class Settings(BaseSettings):
                                       # done (the question tells them to); we
                                       # close the call either way after this.
 
+    # -- Cost rails (call-duration + rate limits) ------------------------------
+    # Every answered minute is a billed minute, so the call driver enforces a
+    # hard wall-clock cap and the dialing endpoint caps how often calls can be
+    # placed. Both are in-process guards -- simple, no external state, and
+    # enough for a single backend instance.
+    max_call_duration_sec: float = 300.0   # hard wall-clock cap per call (5 min);
+                                           # the dialogue aborts (assessment is
+                                           # still logged) when exceeded
+    max_concurrent_calls: int = 3          # streams allowed at once; 0 = unlimited
+    max_calls_per_hour: int = 30           # POST /calls sliding-window limit;
+                                           # 0 = unlimited
+    max_calls_per_day: int = 200           # POST /calls daily limit; 0 = unlimited
+
+    # -- Database (Step 6) ------------------------------------------------------
+    # SQLAlchemy URL. Empty = the default SQLite file backend/voicecare.db.
+    database_url: str = ""
+
+    # -- WhatsApp alerts via the Zernio sandbox (Step 7) -------------------------
+    # High-risk calls are pushed to the care team's WhatsApp through the
+    # Zernio inbox. These are the SANDBOX conversation credentials and are
+    # deliberately separate from FROM_NUMBER (the real toll-free voice line):
+    # voice keeps dialing from the toll-free number, alerts ride the sandbox.
+    alerts_enabled: bool = True
+    inbox_account_id: str = ""             # Zernio sandbox account id
+    alert_conversation_id: str = ""        # id of the sandbox WhatsApp thread
+
+    # -- Scheduler (Step 8) ------------------------------------------------------
+    # SCHEDULE_CALLS_ENABLED is the master switch.
+    #   false (the default for this demo): the backend NEVER dials on its own.
+    #       Every /schedule endpoint still reports the computed next-call time
+    #       per patient, so the dashboard column is real data, not a mock.
+    #   true: an in-process APScheduler job wakes every
+    #       SCHEDULE_INTERVAL_MINUTES, finds the patients whose check-in is due
+    #       and dials them through exactly the same guards as POST /calls
+    #       (hourly/daily budget + concurrency cap + per-tick cap below), so the
+    #       automatic path can never outspend the manual one.
+    schedule_calls_enabled: bool = False
+    schedule_checkin_days: str = "3,7,14,30"  # day offsets after discharge_date
+    schedule_hour: int = 9                    # local hour the check-in is due
+    schedule_minute: int = 0
+    schedule_interval_minutes: int = 30       # how often the tick looks for due patients
+    schedule_grace_days: int = 2              # catch-up window for an overdue slot
+    schedule_max_dials_per_tick: int = 2      # hard cap per tick (cost rail)
+    schedule_dry_run: bool = False            # true = log the dial plan, dial nothing
+
+    # -- Staff auth (Step 9, JWT) -------------------------------------------------
+    # One shared dashboard, three roles (nurse | doctor | admin), no patient
+    # accounts. Empty JWT_SECRET falls back to CALLS_API_KEY so a fresh demo
+    # works; if both are empty, /auth/login refuses to issue tokens.
+    jwt_secret: str = ""                  # secret -- never logged
+    jwt_expires_minutes: int = 480
+    jwt_issuer: str = "voicecare-lk"
+    admin_username: str = "admin"         # seeded on startup when no staff exist
+    admin_password: str = ""              # required for the seed to happen
+    admin_display_name: str = "System Administrator"
+    default_hospital: str = "VoiceCare LK"
+    # Browser origins allowed to call the API (the Vite dev server).
+    cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
     # -- Runtime ----------------------------------------------------------------
     recordings_dir: Path = BACKEND_DIR / "recordings"
     backend_host: str = "127.0.0.1"   # loopback only: ngrok connects from this machine
@@ -101,6 +160,40 @@ class Settings(BaseSettings):
     @property
     def allowed_prefixes(self) -> list[str]:
         return [p.strip() for p in self.allowed_call_prefixes.split(",") if p.strip()]
+
+    @property
+    def checkin_day_offsets(self) -> list[int]:
+        """Day offsets after discharge that a check-in call is due on.
+
+        Survey-informed (SURVEY_INSIGHTS.md): weekly-ish, not daily -- so the
+        default is 3/7/14/30 days post-discharge rather than every day.
+        """
+        offsets: list[int] = []
+        for part in self.schedule_checkin_days.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                value = int(part)
+            except ValueError:
+                continue
+            if value >= 0:
+                offsets.append(value)
+        return sorted(set(offsets)) or [7]
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
+
+    @property
+    def signing_secret(self) -> str:
+        """Secret used to sign staff JWTs.
+
+        JWT_SECRET wins; an empty value falls back to CALLS_API_KEY so a fresh
+        checkout can still log in. Both empty -> auth is disabled (503), never
+        'open'.
+        """
+        return self.jwt_secret.strip() or self.calls_api_key.strip()
 
     @property
     def greeting(self) -> str:

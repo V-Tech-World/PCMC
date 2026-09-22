@@ -32,6 +32,11 @@ def clean_environment(monkeypatch, tmp_path):
     # need it turn it back on explicitly with monkeypatch.setenv.
     monkeypatch.setenv("DIALOGUE_ENABLED", "false")
     monkeypatch.setenv("TTS_BACKEND", "pyttsx3")
+    # Step 6/7 tests must never touch the real voicecare.db file: a shared
+    # in-memory SQLite (StaticPool) keeps the suite hermetic and fast.
+    monkeypatch.setenv("DATABASE_URL", "sqlite://")
+    # Alerts must never actually fire from tests.
+    monkeypatch.setenv("ALERTS_ENABLED", "false")
     get_settings.cache_clear()
     media_auth.reset()
     yield

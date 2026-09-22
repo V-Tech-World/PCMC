@@ -1,0 +1,211 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: .dark is toggled on <html> (default = light). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* VoiceCare LK brand tokens (taken from designs/icons logo gradients). */
+@theme {
+  --color-brand-50: #f0f7f2;
+  --color-brand-100: #dceee2;
+  --color-brand-200: #b9dcc5;
+  --color-brand-300: #8fc3a4;
+  --color-brand-400: #63a67d;
+  --color-brand-500: #4c8c5c;
+  --color-brand-600: #3b7349;
+  --color-brand-700: #2f6142;
+  --color-brand-800: #275037;
+  --color-brand-900: #1f3d28;
+  --color-ink: #1f3d28;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Arial, sans-serif;
+  background: #f6f7f6;
+  color: #262626;
+}
+
+/* ---- Interaction affordances ------------------------------------------- */
+/* The hand pointer on EVERY clickable thing (buttons default to default). */
+a,
+button:not(:disabled),
+[role="button"]:not(:disabled),
+[role="tab"]:not(:disabled),
+select,
+summary {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled,
+input:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+}
+
+a:focus-visible,
+button:focus-visible,
+[role="tab"]:focus-visible {
+  outline: 2px solid #2f6142;
+  outline-offset: 2px;
+}
+
+::selection {
+  background: #b9dcc5;
+  color: #1f3d28;
+}
+
+/* ---- Motion ------------------------------------------------------------- */
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.page-enter {
+  animation: page-in 0.25s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(1.25rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.toast-in {
+  animation: toast-in 0.2s ease-out;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.pop-in {
+  animation: pop-in 0.18s ease-out;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.fade-in {
+  animation: fade-in 0.15s ease-out;
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+.skeleton {
+  background: linear-gradient(90deg, #e9ecec 25%, #f6f7f7 50%, #e9ecec 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+}
+
+@keyframes float-slow {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(14px, -18px) scale(1.06);
+  }
+}
+.float-slow {
+  animation: float-slow 9s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter,
+  .toast-in,
+  .pop-in,
+  .fade-in,
+  .skeleton,
+  .float-slow,
+  .nudge {
+    animation: none;
+  }
+}
+
+/* ---- Dark mode base ------------------------------------------------------ */
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+.dark body {
+  background: #101512;
+  color: #e6eae7;
+}
+
+.dark .skeleton {
+  background: linear-gradient(90deg, #232a26 25%, #2c332f 50%, #232a26 75%);
+  background-size: 200% 100%;
+}
+
+/* ---- Scroll-down indicator (small, extra feature) ------------------------ */
+@keyframes nudge {
+  0%,
+  100% {
+    transform: translateY(-2px);
+  }
+  50% {
+    transform: translateY(3px);
+  }
+}
+.nudge {
+  animation: nudge 1.5s ease-in-out infinite;
+}
+
+/* ---- Slim themed scrollbars ---------------------------------------------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #c9cfcb transparent;
+}
+.dark * {
+  scrollbar-color: #3a423d transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c9cfcb;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #3a423d;
+  background-clip: content-box;
+}

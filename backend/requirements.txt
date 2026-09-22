@@ -19,6 +19,15 @@ faster-whisper>=1.0
 numpy>=1.26
 scipy>=1.11
 
+# -- persistence (Step 6): SQLModel ORM over SQLite --
+sqlmodel>=0.0.22
+
+# -- follow-up check-in cron (Step 8) --
+apscheduler>=3.11,<4
+
+# -- staff dashboard auth (Step 9): HS256 JWTs --
+pyjwt>=2.14,<3
+
 # Python 3.13 removed the stdlib `audioop`; this shim restores it.
 audioop-lts>=0.2.1 ; python_version >= "3.13"
 

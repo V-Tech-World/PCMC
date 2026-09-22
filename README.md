@@ -232,7 +232,7 @@ backend/
 |-- dialogue.py                # question flow / conversation state machine
 |-- tts.py                      # text -> speech audio
 |-- db.py                        # SQLModel models and queries
-|-- alerts.py                     # SMS/email trigger to staff
+|-- alerts.py                     # WhatsApp trigger to staff (Zernio sandbox)
 |-- scheduler.py                    # decides which patients are due today
 `-- outbound_call.py                  # places calls via Zernio API
 ```
@@ -268,41 +268,49 @@ Status is tracked here so it's always clear where we actually are.
 - [x] TC3: Sample transcripts covering low/medium/high risk each score correctly
 - [x] TC4: An empty or ambiguous transcript is handled without crashing
 
-### Step 5 -- Wire NLP + risk into the live call -- Not started
-- [ ] TC1: A real answer is transcribed and scored within a few seconds, without dead air
-- [ ] TC2: The risk level correctly changes the next spoken response
-- [ ] TC3: A full live call completes without the backend crashing
+### Step 5 -- Wire NLP + risk into the live call -- COMPLETE
+- [x] TC1: A real answer is transcribed and scored within a few seconds, without dead air
+- [x] TC2: The risk level correctly changes the next spoken response
+- [x] TC3: A full live call completes without the backend crashing
+- [x] Final open question captured in a fixed 60 s window (patient may hang up; call closes either way)
+- [x] Cost rails: max call duration per call + internal rate limiting (hourly/daily/concurrent) on POST /calls
 
-### Step 6 -- Database (SQLModel + SQLite) -- Not started
-- [ ] TC1: Each call produces a new row with correct transcript/risk/timestamp
-- [ ] TC2: The call is correctly linked to the right patient record
-- [ ] TC3: Data survives a backend restart
+See backend/step-5-readme.md for details.
 
-### Step 7 -- Alerts -- Not started
-- [ ] TC1: A high-risk call triggers an SMS/email within a reasonable time
-- [ ] TC2: A low-risk call does not trigger an alert
-- [ ] TC3: The alert includes patient code, risk level, and key symptoms
+### Step 6 -- Database (SQLModel + SQLite) -- COMPLETE
+- [x] TC1: Each call produces a new row with correct transcript/risk/timestamp
+- [x] TC2: The call is correctly linked to the right patient record
+- [x] TC3: Data survives a backend restart
 
-### Step 8 -- Scheduler -- Not started
-- [ ] TC1: A patient due today is called automatically, with no manual trigger
-- [ ] TC2: A patient not yet due is not called
-- [ ] TC3: The next scheduled call time is correctly computed and shown
+See backend/step-6-7-readme.md.
 
-### Step 9 -- Frontend dashboard (React + Tailwind) -- Not started
-- [ ] TC1: Login works for each of the 3 roles, showing the correct allowed actions
-- [ ] TC2: Call list displays with correct risk-level color coding
-- [ ] TC3: The manual "call now" button places a real call
-- [ ] TC4: Layout is usable and responsive at mobile width
+### Step 7 -- Alerts -- COMPLETE (WhatsApp via Zernio sandbox instead of SMS/email)
+- [x] TC1: A high-risk call triggers a WhatsApp alert within a reasonable time (right after the call)
+- [x] TC2: A low-risk call does not trigger an alert
+- [x] TC3: The alert includes patient code, risk level, and key symptoms (plus full answers/transcripts)
+
+See backend/step-6-7-readme.md. Live verification: backend/live-test-plan.md.
+
+### Step 8 -- Scheduler -- COMPLETE (ships DORMANT: SCHEDULE_CALLS_ENABLED=false)
+- [x] TC1: A patient due today is called automatically, with no manual trigger (proven with the dial mocked in tests/test_step8.py; live auto-dial only if you flip the switch)
+- [x] TC2: A patient not yet due is not called (plus: slots older than the grace window are never dialed)
+- [x] TC3: The next scheduled call time is correctly computed and shown (GET /schedule + the dashboard Schedule tab)
+
+See backend/step-8-readme.md.
+
+### Step 9 -- Frontend dashboard (Vite + React + TypeScript + Tailwind) -- COMPLETE
+- [x] TC1: Login works for each of the 3 roles, showing the correct allowed actions (backend: tests/test_step9.py; UI gated by the GET /auth/roles permission matrix)
+- [x] TC2: Call list displays with correct risk-level color coding (red/amber/green badges + filter chips)
+- [ ] TC3: The manual "call now" button places a real call -- UI + confirm dialog built; ticks when you run live-test-plan.md section 7 (it replaces Call B's curl trigger, no extra call)
+- [x] TC4: Layout is usable and responsive at mobile width (sidebar collapses to a drawer under 1024px)
+
+See backend/step-9-readme.md. Verify: 169 backend tests + `cd frontend && npm run build`.
 
 ### Step 10 -- Multilingual (Tamil, then Sinhala) -- Not started
 - [ ] TC1: Patient can select a language at the start of the call
 - [ ] TC2: A Tamil test call produces a reasonable transcript
 - [ ] TC3: TTS output in the selected language is understandable
 
-### Step 11 -- Docker packaging -- Not started
-- [ ] TC1: `docker compose up` starts the full stack with one command
-- [ ] TC2: Data survives a container restart (volume confirmed working)
-- [ ] TC3: The frontend can reach the backend API inside the Docker network
 
 ---
 

@@ -188,6 +188,13 @@ class MediaSession:
         path = Path(recordings_dir) / f"call_{self.call_id}" / "agent_audio.wav"
         return recordings_service.write_wav(path, bytes(self.agent_pcm))
 
+# Live media streams (cost rail: MAX_CONCURRENT_CALLS counts these).
+# A list, not a set: MediaSession is a plain dataclass (unhashable).
+active_sessions: list[MediaSession] = []
+
+
+@router.websocket("/media-stream")
+
 @router.websocket("/media-stream")
 async def media_stream(websocket: WebSocket) -> None:
     """Authenticate, wire the receiver + call-flow driver, and clean up."""
@@ -220,21 +227,23 @@ async def media_stream(websocket: WebSocket) -> None:
             )
 
     session = MediaSession()
+    active_sessions.append(session)
 
     inbox: asyncio.Queue = asyncio.Queue()
     receiver = asyncio.create_task(
         _receive_loop(websocket, session, inbox), name="media-receiver"
     )
     try:
-        category = (media_auth.get_call_config(token) or {}).get(
-            "diagnosis_category", "general"
-        )
+        call_config = media_auth.get_call_config(token) or {}
+        category = call_config.get("diagnosis_category", "general")
         await call_flow.run_call(
             websocket=websocket,
             inbox=inbox,
             session=session,
             category=category,
             settings=settings,
+            to_number=str(call_config.get("to_number") or ""),
+            patient_code=call_config.get("patient_code"),
         )
     except call_flow.CallEnded as exc:
         logger.info("Call flow finished: %s", exc)
@@ -243,6 +252,10 @@ async def media_stream(websocket: WebSocket) -> None:
         with contextlib.suppress(Exception):
             await websocket.close(code=1011)
     finally:
+        for i, s in enumerate(active_sessions):
+            if s is session:  # identity: dataclass __eq__ compares fields
+                del active_sessions[i]
+                break
         receiver.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await receiver
