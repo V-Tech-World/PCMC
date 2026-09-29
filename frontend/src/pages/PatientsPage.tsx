@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -7,7 +7,24 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../components/Toast";
 import { Banner, Card, EmptyState, Spinner, fmtDate } from "../components/ui";
 
-const CATEGORIES = ["general", "surgical", "cardiac"] as const;
+/**
+ * Discharge types. The backend validates against app/services/dialogue.CATEGORIES
+ * (general | surgical | cardiac | respiratory | diabetic), so this list must
+ * stay in step with it.
+ */
+const CATEGORIES = [
+  "general",
+  "surgical",
+  "cardiac",
+  "respiratory",
+  "diabetic",
+] as const;
+
+const LANGUAGES = [
+  { value: "en", label: "English" },
+  { value: "ta", label: "Tamil" },
+  { value: "si", label: "Sinhala" },
+] as const;
 
 const EMPTY_FORM = {
   patient_code: "",
@@ -16,10 +33,13 @@ const EMPTY_FORM = {
   diagnosis_category: "general",
   discharge_date: "",
   notes: "",
+  language_pref: "en",
+  active: true,
 };
 
 /**
- * Patient register (admin-managed) + the manual "Call Now" button (TC3).
+ * Patient register (admin-managed), the edit action for an existing record,
+ * and the manual "Call Now" button (TC3).
  * Dialing costs real money, so every call goes through a confirm dialog
  * that names the number being dialed.
  */
@@ -35,6 +55,9 @@ export default function PatientsPage() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [formBusy, setFormBusy] = useState(false);
+  /** patient_code being edited, or null when the form creates a new record. */
+  const [editing, setEditing] = useState<string | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
 
   const [dialTarget, setDialTarget] = useState<Patient | null>(null);
   const [dialBusy, setDialBusy] = useState(false);
@@ -73,19 +96,47 @@ export default function PatientsPage() {
     setParams(params, { replace: true });
   }, [params, patients, can, setParams]);
 
+  /** Open the form pre-filled on an existing record (admin only). */
+  function startEdit(p: Patient) {
+    setForm({
+      patient_code: p.patient_code,
+      name: p.name ?? "",
+      phone_number: p.phone_number ?? "",
+      diagnosis_category: p.diagnosis_category || "general",
+      discharge_date: p.discharge_date ?? "",
+      notes: p.notes ?? "",
+      language_pref: p.language_pref || "en",
+      active: p.active ?? true,
+    });
+    setEditing(p.patient_code);
+    setShowForm(true);
+    setError("");
+    // Bring the form into view instead of leaving the user at the table row.
+    window.requestAnimationFrame(() =>
+      formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
+  }
+
+  function closeForm() {
+    setShowForm(false);
+    setForm(EMPTY_FORM);
+    setEditing(null);
+  }
+
   async function savePatient(event: FormEvent) {
     event.preventDefault();
     setFormBusy(true);
     setError("");
     try {
+      // Same endpoint for create and edit: the backend matches on
+      // patient_code, so an edit updates the record in place.
       const res = await api.post<{ status: string }>("/records/patients", form);
       toast.ok(
         res.status === "created"
           ? `Patient ${form.patient_code} created.`
           : `Patient ${form.patient_code} updated.`,
       );
-      setForm(EMPTY_FORM);
-      setShowForm(false);
+      closeForm();
       await load();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Could not save.");
@@ -122,7 +173,7 @@ export default function PatientsPage() {
         {can("manage_patients") && (
           <button
             type="button"
-            onClick={() => setShowForm((v) => !v)}
+            onClick={() => (showForm ? closeForm() : setShowForm(true))}
             className="cursor-pointer rounded-lg bg-brand-700 px-4 py-2 text-sm font-bold text-white shadow-sm transition-all hover:bg-brand-800 hover:shadow active:scale-95"
           >
             {showForm ? "Close form" : "+ Add patient"}
@@ -133,17 +184,30 @@ export default function PatientsPage() {
       {error && <Banner kind="error">{error}</Banner>}
 
       {showForm && can("manage_patients") && (
-        <Card title="Register / update patient">
-          <form onSubmit={savePatient} className="grid gap-3 sm:grid-cols-2">
+        <Card
+          title={editing ? `Edit patient ${editing}` : "Register a patient"}
+        >
+          <form
+            ref={formRef}
+            onSubmit={savePatient}
+            className="grid gap-3 sm:grid-cols-2"
+          >
             <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
               Patient code *
               <input
                 required
+                readOnly={editing !== null}
                 value={form.patient_code}
                 onChange={(e) => setForm({ ...form, patient_code: e.target.value })}
                 placeholder="P-0001"
-                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200 read-only:bg-neutral-100 read-only:text-neutral-600 dark:read-only:bg-white/5 dark:read-only:text-neutral-400"
               />
+              {editing !== null && (
+                <span className="mt-1 block text-xs font-normal text-neutral-500 dark:text-neutral-400">
+                  The code is the record key, so it stays as it is. Everything
+                  else can be corrected.
+                </span>
+              )}
             </label>
             <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
               Name
@@ -164,7 +228,7 @@ export default function PatientsPage() {
               />
             </label>
             <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
-              Category
+              Discharge type
               <select
                 value={form.diagnosis_category}
                 onChange={(e) =>
@@ -178,6 +242,9 @@ export default function PatientsPage() {
                   </option>
                 ))}
               </select>
+              <span className="mt-1 block text-xs font-normal text-neutral-500 dark:text-neutral-400">
+                Picks the one type-specific question asked on the call.
+              </span>
             </label>
             <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
               Discharge date
@@ -188,6 +255,31 @@ export default function PatientsPage() {
                 className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
               />
             </label>
+            <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
+              Preferred language
+              <select
+                value={form.language_pref}
+                onChange={(e) =>
+                  setForm({ ...form, language_pref: e.target.value })
+                }
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+              >
+                {LANGUAGES.map((l) => (
+                  <option key={l.value} value={l.value}>
+                    {l.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 self-end rounded-lg border border-neutral-300 px-3 py-2 text-sm font-semibold text-neutral-600 dark:border-neutral-600 dark:text-neutral-300 sm:col-span-2 dark:bg-white/5">
+              <input
+                type="checkbox"
+                checked={form.active}
+                onChange={(e) => setForm({ ...form, active: e.target.checked })}
+                className="h-4 w-4 accent-brand-700"
+              />
+              Active (uncheck for a discharged/archived patient)
+            </label>
             <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300 sm:col-span-2">
               Notes
               <textarea
@@ -197,14 +289,25 @@ export default function PatientsPage() {
                 className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
               />
             </label>
-            <div className="sm:col-span-2">
+            <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
               <button
                 type="submit"
                 disabled={formBusy}
                 className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-brand-700 px-4 py-2 text-sm font-bold text-white shadow-sm transition-all hover:bg-brand-800 hover:shadow active:scale-95 disabled:opacity-50"
               >
                 {formBusy && <Spinner className="h-4 w-4" />}
-                {formBusy ? "Saving…" : "Save patient"}
+                {formBusy
+                  ? "Saving…"
+                  : editing
+                    ? "Save changes"
+                    : "Save patient"}
+              </button>
+              <button
+                type="button"
+                onClick={closeForm}
+                className="cursor-pointer rounded-lg bg-white px-4 py-2 text-sm font-bold text-neutral-700 ring-1 ring-neutral-300 transition-all hover:bg-neutral-50 active:scale-95 dark:bg-white/5 dark:text-neutral-200 dark:ring-neutral-600 dark:hover:bg-white/10"
+              >
+                Cancel
               </button>
             </div>
           </form>
@@ -245,7 +348,7 @@ export default function PatientsPage() {
                 {patients.map((p) => (
                   <tr
                     key={p.patient_code}
-                    className="border-b border-neutral-100 dark:border-neutral-700/60 hover:bg-brand-50 dark:hover:bg-white/5/50 dark:hover:bg-white/5"
+                    className="border-b border-neutral-100 dark:border-neutral-700/60 hover:bg-brand-50 dark:hover:bg-white/5"
                   >
                     <td className="px-2 py-2 font-semibold">{p.patient_code}</td>
                     <td className="px-2 py-2">{p.name || "--"}</td>
@@ -259,25 +362,36 @@ export default function PatientsPage() {
                     </td>
                     <td className="px-2 py-2 text-xs">
                       {p.active ? (
-                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-bold text-emerald-700">
+                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-bold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
                           active
                         </span>
                       ) : (
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 font-bold text-slate-500">
+                        <span className="rounded-full bg-slate-100 px-2 py-0.5 font-bold text-slate-500 dark:bg-neutral-800 dark:text-neutral-400">
                           inactive
                         </span>
                       )}
                     </td>
                     <td className="px-2 py-2 text-right">
-                      {can("call_patient") && p.active && (
-                        <button
-                          type="button"
-                          onClick={() => setDialTarget(p)}
-                          className="cursor-pointer rounded-lg bg-brand-700 px-3 py-1.5 text-xs font-bold text-white shadow-sm transition-all hover:bg-brand-800 hover:shadow active:scale-95"
-                        >
-                          ☎ Call now
-                        </button>
-                      )}
+                      <div className="flex flex-wrap justify-end gap-1.5">
+                        {can("manage_patients") && (
+                          <button
+                            type="button"
+                            onClick={() => startEdit(p)}
+                            className="cursor-pointer rounded-lg bg-white px-3 py-1.5 text-xs font-bold text-neutral-700 ring-1 ring-neutral-300 transition-all hover:bg-neutral-50 active:scale-95 dark:bg-white/5 dark:text-neutral-200 dark:ring-neutral-600 dark:hover:bg-white/10"
+                          >
+                            ✎ Edit
+                          </button>
+                        )}
+                        {can("call_patient") && p.active && (
+                          <button
+                            type="button"
+                            onClick={() => setDialTarget(p)}
+                            className="cursor-pointer rounded-lg bg-brand-700 px-3 py-1.5 text-xs font-bold text-white shadow-sm transition-all hover:bg-brand-800 hover:shadow active:scale-95"
+                          >
+                            ☎ Call now
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

@@ -199,6 +199,85 @@ def test_only_admin_upserts_patients_everyone_can_read(staff):
     assert client.get("/records/patients", headers=nurse_h).json()["count"] == 1
 
 
+def test_admin_can_edit_an_existing_patient(staff):
+    """The dashboard's Edit action: same endpoint, status 'updated', no dupe.
+
+    Editing re-posts the (pre-filled) record, so the code must update the row
+    it already matches -- including flipping category to one of the newer
+    discharge types -- and never create a second patient.
+    """
+    client = _client()
+    admin_h, _ = _login(client, "adm901", "admin-pass-9")
+    nurse_h, _ = _login(client, "nur901", "nurse-pass-9")
+
+    created = client.post(
+        "/records/patients",
+        json={
+            "patient_code": "P-902", "name": "Nimal Silva",
+            "phone_number": "+94771000902", "diagnosis_category": "general",
+            "discharge_date": "2026-09-01", "notes": "first draft",
+        },
+        headers=admin_h,
+    )
+    assert created.status_code == 201
+    assert created.json()["status"] == "created"
+
+    edited = client.post(
+        "/records/patients",
+        json={
+            "patient_code": "P-902", "name": "Nimal K. Silva",
+            "phone_number": "+94771000903", "diagnosis_category": "respiratory",
+            "discharge_date": "2026-09-02", "notes": "corrected number",
+            "language_pref": "ta", "active": False,
+        },
+        headers=admin_h,
+    )
+    assert edited.status_code == 201
+    body = edited.json()
+    assert body["status"] == "updated"
+    assert body["patient"]["name"] == "Nimal K. Silva"
+    assert body["patient"]["phone_number"] == "+94771000903"
+    assert body["patient"]["diagnosis_category"] == "respiratory"
+    assert body["patient"]["language_pref"] == "ta"
+    assert body["patient"]["active"] is False
+
+    listed = client.get("/records/patients", headers=nurse_h).json()
+    assert listed["count"] == 1                       # edited in place
+    assert listed["patients"][0]["name"] == "Nimal K. Silva"
+
+    # A nurse may read but never write records.
+    assert client.post(
+        "/records/patients",
+        json={"patient_code": "P-903", "phone_number": "+94771000904"},
+        headers=nurse_h,
+    ).status_code == 403
+
+
+def test_patient_category_must_be_a_known_discharge_type(staff):
+    client = _client()
+    admin_h, _ = _login(client, "adm901", "admin-pass-9")
+    for category in ("general", "surgical", "cardiac", "respiratory", "diabetic"):
+        assert client.post(
+            "/records/patients",
+            json={
+                "patient_code": f"P-{category}", "name": category,
+                "phone_number": "+94771000905", "diagnosis_category": category,
+            },
+            headers=admin_h,
+        ).status_code == 201
+
+    rejected = client.post(
+        "/records/patients",
+        json={
+            "patient_code": "P-905", "phone_number": "+94771000905",
+            "diagnosis_category": "dentistry",
+        },
+        headers=admin_h,
+    )
+    assert rejected.status_code == 422
+    assert "diabetic" in rejected.json()["detail"]      # the valid list is listed
+
+
 # ----------------------------------------------------------------- TC3
 
 def _fake_place_call(monkeypatch) -> list[dict]:
@@ -363,7 +442,9 @@ def test_dashboard_summary_feeds_the_cards_and_call_list(staff):
     assert data["scheduler"]["enabled"] is False
     assert data["due_patients"][0]["patient_code"] == "P-901"
     assert "max_call_duration_sec" in data["cost_rails"]
-    assert data["alerts"]["channel"] == "whatsapp (Zernio inbox)"
+    # Step 7 rework: the shipped mode prepares the alert in-dashboard.
+    assert data["alerts"]["delivery"] == "ready"
+    assert data["alerts"]["channel"] == "prepared in-dashboard (manual delivery)"
 
 
 def test_activity_is_the_compact_risk_list(staff):
@@ -403,3 +484,61 @@ def test_default_admin_is_seeded_and_can_log_in():
     headers, body = _login(client, "root9", "root-pass-9")
     assert body["user"]["role"] == "admin"
     assert client.get("/auth/staff", headers=headers).status_code == 200
+
+
+# ------------------------------------------------------------- password reset
+
+def test_forgot_password_self_service_reset(staff):
+    """No admin, no third party: employee ID + new password + confirm."""
+    client = _client()
+
+    # unknown id -> generic 404; mismatch -> 422; too short -> 422 (min 6)
+    assert client.post("/auth/reset-password", json={
+        "username": "ghost901", "new_password": "brand-new-pass",
+        "confirm_password": "brand-new-pass",
+    }).status_code == 404
+    assert client.post("/auth/reset-password", json={
+        "username": "nur901", "new_password": "brand-new-pass",
+        "confirm_password": "different-pass",
+    }).status_code == 422
+    assert client.post("/auth/reset-password", json={
+        "username": "nur901", "new_password": "abc",
+        "confirm_password": "abc",
+    }).status_code == 422
+
+    # the real flow: NO auth headers at all (the caller is logged out)
+    ok = client.post("/auth/reset-password", json={
+        "username": "NUR901",               # case/whitespace insensitive
+        "new_password": "brand-new-pass",
+        "confirm_password": "brand-new-pass",
+    })
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["status"] == "password_updated"
+
+    # the old password is dead (still a generic 401), the new one logs in
+    assert client.post("/auth/login", json={
+        "username": "nur901", "password": "nurse-pass-9",
+    }).status_code == 401
+    _, body = _login(client, "nur901", "brand-new-pass")
+    assert body["user"]["role"] == "nurse"
+
+
+def test_reset_password_refuses_deactivated_accounts(staff):
+    client = _client()
+    with db_service.new_session() as session:
+        row = session.exec(
+            select(StaffUser).where(StaffUser.username == "nur901")
+        ).first()
+        row.active = False
+        session.add(row)
+        session.commit()
+
+    resp = client.post("/auth/reset-password", json={
+        "username": "nur901", "new_password": "brand-new-pass",
+        "confirm_password": "brand-new-pass",
+    })
+    assert resp.status_code == 404          # same generic answer as unknown
+    # ...and they still cannot log in with the attempted password
+    assert client.post("/auth/login", json={
+        "username": "nur901", "password": "brand-new-pass",
+    }).status_code == 401

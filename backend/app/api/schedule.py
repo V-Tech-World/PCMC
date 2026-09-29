@@ -5,6 +5,7 @@ Scheduler API (Step 8): the follow-up check-in plan, read + manual tick.
     GET  /schedule/due      -- just the patients due right now (no dialing)
     GET  /schedule/status   -- is the automatic dialer on? when is the next tick?
     POST /schedule/run-now  -- run one tick immediately (admin)
+    POST /schedule/enabled  -- turn the automatic dialer on/off (admin, persisted)
 
 `run-now` exists so the cronjob can be demonstrated without waiting for the
 interval -- and it is the honest way to prove the safety property: with
@@ -45,6 +46,19 @@ def get_schedule(context: AuthContext = Depends(require_auth)) -> dict:
         scheduler.compute_schedule(p, last_calls.get(p.patient_code), settings=settings)
         for p in patients
     ]
+    # One-shot cooldown annotation per patient (24h auto-dial window): the
+    # board shows each due row with its hours_until_next_autodial, while the
+    # underlying slots/timeline maths stay untouched. A cooled-down patient no
+    # longer counts as "will dial automatically" this tick.
+    cooldown = {
+        code: round(scheduler.cooldown_hours_left(code, settings=settings), 1)
+        for code in {row["patient_code"] for row in rows}
+    }
+    for row in rows:
+        left = cooldown.get(row["patient_code"], 0.0)
+        row["cooldown_hours"] = left
+        if left > 0:
+            row["will_dial_automatically"] = False
     due_now = [r for r in rows if r["status"] in (scheduler.STATUS_DUE, scheduler.STATUS_OVERDUE)]
     return {
         "scheduler": scheduler.status(settings),
@@ -72,10 +86,26 @@ def get_due(context: AuthContext = Depends(require_auth)) -> dict:
                 "slot": item.slot.isoformat(),
                 "status": item.status,
                 "days_overdue": item.days_overdue,
+                "cooldown_hours": round(item.cooldown_hours, 1),
             }
             for item in due
         ],
     }
+
+
+def _note(settings) -> str:
+    return (
+        "Automatic follow-up calls are OFF: the backend will not dial on its own. "
+        "Manual calls from the dashboard still work."
+        if not settings.schedule_calls_enabled
+        else "Automatic follow-up calls are ON and will be placed when a patient is due."
+    )
+
+
+class SwitchRequest(BaseModel):
+    """Turn the automatic dialer on (true) or off (false)."""
+
+    enabled: bool
 
 
 @router.get("/status")
@@ -83,11 +113,34 @@ def get_status(context: AuthContext = Depends(require_auth)) -> dict:
     """Is the automatic dialer running, and when does it next wake up?"""
     settings = get_settings()
     state = scheduler.status(settings)
-    state["note"] = (
-        "Automatic follow-up calls are OFF: the backend will not dial on its own. "
-        "Manual calls from the dashboard still work."
-        if not settings.schedule_calls_enabled
-        else "Automatic follow-up calls are ON and will be placed when a patient is due."
+    state["note"] = _note(settings)
+    return state
+
+
+@router.post("/enabled")
+def set_enabled(
+    body: SwitchRequest,
+    context: AuthContext = Depends(require_roles("admin")),
+) -> dict:
+    """Turn the automatic dialer ON/OFF from the dashboard (admin).
+
+    The choice is persisted (AppSetting), so it survives a backend restart --
+    SCHEDULE_CALLS_ENABLED in .env stays the default for a fresh database.
+    Safe by construction: arming starts the interval job WITHOUT an immediate
+    tick, so no call is ever placed by flipping the switch; due patients are
+    dialed on the next tick (or an explicit run-now), through the normal cost
+    rails.
+    """
+    settings = get_settings()
+    state = scheduler.set_switch(body.enabled, settings=settings)
+    state["note"] = _note(settings)
+    state["message"] = (
+        f"Automatic follow-up calls turned {'ON' if body.enabled else 'OFF'} (saved)."
+    )
+    logger.info(
+        "Scheduler switch turned %s by %s",
+        "ON" if body.enabled else "OFF",
+        context.subject or "api-key",
     )
     return state
 
@@ -132,7 +185,7 @@ def run_now(
         "planned": result.planned,
         "outcomes": result.outcomes,
         "message": (
-            "SCHEDULE_CALLS_ENABLED=false -- plan reported, no call placed."
+            "Automatic calls are OFF -- plan reported, no call placed."
             if not result.enabled
             else "Tick complete."
         ),

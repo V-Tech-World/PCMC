@@ -170,6 +170,16 @@ button:focus-visible,
   background-size: 200% 100%;
 }
 
+/* ---- Login card: stays LIGHT even in dark mode (branding decision) --------- */
+/* Tailwind preflight makes inputs/selects inherit `color` with a transparent
+   background: without pinning this, the card would inherit the dark page's
+   light text and render invisible values on white. color-scheme also keeps
+   the native select popup and placeholders in light styling. */
+.login-card {
+  color-scheme: light;
+  color: #262626;
+}
+
 /* ---- Scroll-down indicator (small, extra feature) ------------------------ */
 @keyframes nudge {
   0%,

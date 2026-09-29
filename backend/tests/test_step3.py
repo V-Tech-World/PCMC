@@ -15,6 +15,7 @@ import pytest
 from app.core.config import get_settings
 from app.services import call_flow
 from app.services.dialogue import (
+    FINAL_QUESTION_ID,
     CallDialogue,
     build_script,
     extract_choice,
@@ -47,6 +48,42 @@ def test_script_varies_only_category_question():
     assert "wound" in surgical["category_surgical"].lower()
     assert "breathlessness" in cardiac["category_cardiac"].lower()
 
+
+
+def test_new_discharge_types_have_their_own_question():
+    """Respiratory + diabetic (added 29 Sep 2026) behave like every other type:
+    identical core flow, exactly one type-specific question, and a matching
+    question id that the risk scorer keys off ('category_<type>')."""
+    from app.services.dialogue import CATEGORIES
+
+    general = {q.id: q.text for q in build_script("general")}
+    respiratory = {q.id: q.text for q in build_script("respiratory")}
+    diabetic = {q.id: q.text for q in build_script("diabetic")}
+
+    for qid in ("medication", "pain", "anything_else"):
+        assert general[qid] == respiratory[qid] == diabetic[qid]
+    assert "wheezing" in respiratory["category_respiratory"].lower()
+    assert "foot" in diabetic["category_diabetic"].lower()
+
+    for category in CATEGORIES:
+        ids = {q.id for q in build_script(category)}
+        assert ids == {"medication", "pain", f"category_{category}",
+                       FINAL_QUESTION_ID}
+
+
+def test_diabetic_flow_asks_the_category_question_and_grades_the_answer():
+    """A full diabetic call: four questions, one answer each, scored."""
+    dialogue = CallDialogue("diabetic")
+    dialogue.start()
+    asked = []
+    for answer in ("yes I took them", "no pain", "yes my foot is sore", "no"):
+        asked.append(dialogue.current_question.id)
+        dialogue.record_answer(answer)
+    assert asked == ["medication", "pain", "category_diabetic",
+                     FINAL_QUESTION_ID]
+    assert dialogue.is_complete
+    assert dialogue.answers["category_diabetic"].interpretation is True
+    assert dialogue.assess_risk().risk_level in {"medium", "high"}
 
 
 def test_unknown_category_rejected():

@@ -28,7 +28,7 @@ class TriggerCallRequest(BaseModel):
 
     phone_number: str | None = None
     patient_code: str | None = None   # links the call to the patient record
-    diagnosis_category: str = "general"  # general | surgical | cardiac
+    diagnosis_category: str = "general"  # any app.services.dialogue.CATEGORIES key
     amd: bool | None = None  # per-call AMD override; None = use CALL_AMD env
 
 
@@ -110,6 +110,20 @@ def trigger_call(
 
     # The dial succeeded -- count it against the hourly/daily budgets.
     rate_limiter.record_dial()
+
+    # Manual dials start the same 24h per-patient cooldown window as automatic
+    # ones (the window never *blocks* a manual call -- only run_tick checks it).
+    if patient is not None:
+        try:
+            from app.services import scheduler as _scheduler
+
+            _scheduler.record_dial_stamp(
+                patient.patient_code, database_url=settings.database_url
+            )
+        except Exception:
+            logger.exception(
+                "Could not stamp last-dial time for %s", patient.patient_code
+            )
 
     # The category rides on the one-time stream token (see outbound_call),
     # so the WS handler knows which script to run when Zernio connects.

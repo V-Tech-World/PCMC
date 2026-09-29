@@ -1,20 +1,29 @@
 """
-Alerts (Step 7): HIGH-risk calls notify the care team over WhatsApp.
+Alerts (Step 7, reworked 29 Sep 2026): HIGH-risk calls get an alert message
+PREPARED; whether it is also delivered is a config choice.
 
-Delivery rides on the Zernio inbox (same API key as the voice calls), using
-the SANDBOX WhatsApp conversation the operator registered:
+Why it changed: WhatsApp delivery rode on the Zernio inbox sandbox thread,
+which is a test surface, not a hospital channel -- and the demo must not depend
+on a message actually leaving the backend. So the call flow now always builds
+the full alert text for a HIGH-risk call and stores it on the call row, where
+the dashboard shows it (call detail -> "Alert message" + Copy button):
+
+    ALERT_DELIVERY=ready     (default)  prepare + store, send nothing
+    ALERT_DELIVERY=whatsapp             also POST it to the sandbox thread
+
+The WhatsApp transport (unchanged from the original Step 7) is:
 
     POST https://zernio.com/api/v1/inbox/conversations/{conversation_id}/messages
     Authorization: Bearer <ZERNIO_API_KEY>
     {"accountId": "<inbox account id>", "message": "<text>"}
 
-The sandbox credentials live in their own env vars (ZERNIO_INBOX_ACCOUNT_ID /
-ZERNIO_ALERT_CONVERSATION_ID) and never touch the real toll-free FROM_NUMBER:
-voice calls keep dialing from the toll-free line, alerts go out through the
-sandbox WhatsApp thread. If either sandbox var is unset, alerts are skipped
-(with a logged reason) -- the call row still records the risk.
+The sandbox credentials live in their own env vars
+(ZERNIO_INBOX_ACCOUNT_ID / ZERNIO_ALERT_CONVERSATION_ID) and never touch the
+real toll-free FROM_NUMBER: voice calls keep dialing from the toll-free line.
+If the transport is selected but unconfigured, the alert is still prepared and
+stored, and the row records why it was not sent.
 
-Per the README TCs: only HIGH risk triggers an alert, and the message carries
+Per the README TCs: only HIGH risk produces an alert, and the message carries
 the patient code, risk level, and key symptoms (plus the full answers and
 transcripts, so the on-call nurse sees everything without opening the app).
 """
@@ -22,6 +31,7 @@ transcripts, so the on-call nurse sees everything without opening the app).
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import requests
 
@@ -32,12 +42,30 @@ logger = logging.getLogger("voicecare.alerts")
 ZERNIO_INBOX_MESSAGES_ENDPOINT = "https://zernio.com/api/v1/inbox/conversations"
 _ALERT_TIMEOUT_SECONDS = 15
 
-#: Only HIGH risk pages the care team (Step 7 TC2: low risk stays silent).
+#: Only HIGH risk produces an alert (Step 7 TC2: low risk stays silent).
 ALERT_RISK_LEVEL = "high"
+
+#: Delivery modes (ALERT_DELIVERY).
+DELIVERY_READY = "ready"        # build + store the message, send nothing
+DELIVERY_WHATSAPP = "whatsapp"  # build + store + POST to the sandbox thread
+
+#: alert_status values written to the call row.
+STATUS_SKIPPED = "skipped"              # not a HIGH-risk call
+STATUS_READY = "ready"                  # message prepared, waiting for a human/channel
+STATUS_NOT_CONFIGURED = "not_configured"  # transport selected but unusable
 
 
 class AlertError(RuntimeError):
     """The WhatsApp alert could not be delivered."""
+
+
+@dataclass(frozen=True)
+class AlertOutcome:
+    """What happened to one call's alert, ready to store on the row."""
+
+    status: str
+    detail: str = ""
+    message: str = ""
 
 
 def alerts_configured(settings: Settings | None = None) -> bool:
@@ -136,27 +164,77 @@ def send_whatsapp_alert(
     return str(message_id)
 
 
-def maybe_send_alert(record, settings: Settings | None = None) -> str:
-    """Alert gate: HIGH risk -> send; anything else -> skipped (Step 7 TC2).
+def delivery_mode(settings: Settings | None = None) -> str:
+    """Normalised ALERT_DELIVERY value ('ready' | 'whatsapp')."""
+    settings = settings or get_settings()
+    mode = (settings.alert_delivery or DELIVERY_READY).strip().lower()
+    if mode not in (DELIVERY_READY, DELIVERY_WHATSAPP):
+        logger.warning(
+            "Unknown ALERT_DELIVERY=%r -- falling back to %r (prepare only)",
+            settings.alert_delivery, DELIVERY_READY,
+        )
+        return DELIVERY_READY
+    return mode
 
-    Returns the final alert_status for the record: 'sent (id)', 'failed: ...',
-    'skipped' (low/medium risk), or 'not_configured'.
+
+def prepare_alert(
+    record,
+    patient=None,
+    settings: Settings | None = None,
+) -> AlertOutcome:
+    """Build the alert for one finished call and (optionally) deliver it.
+
+    Always runs at the end of a call:
+    - not HIGH risk          -> status 'skipped', nothing prepared (Step 7 TC2)
+    - HIGH + ready (default) -> status 'ready', full message stored on the row
+    - HIGH + whatsapp        -> status 'sent (<id>)' / 'failed: ...' /
+                                'not_configured', message stored either way
     """
     settings = settings or get_settings()
+
     if record.risk_level != ALERT_RISK_LEVEL:
         logger.info(
-            "No alert: risk=%s (only %s pages the care team)",
-            record.risk_level, ALERT_RISK_LEVEL,
+            "No alert: risk=%s (only %s gets one)", record.risk_level,
+            ALERT_RISK_LEVEL,
         )
-        return "skipped"
-    if not settings.alerts_enabled or not alerts_configured(settings):
-        logger.warning("HIGH risk detected but alerts are not configured -- not sent")
-        return "not_configured"
+        return AlertOutcome(STATUS_SKIPPED, f"risk={record.risk_level}")
 
-    message = format_alert_message(record)
+    message = format_alert_message(record, patient)
+
+    if delivery_mode(settings) == DELIVERY_READY:
+        logger.info(
+            "Alert PREPARED for record id=%s (%d chars) -- delivery is 'ready'",
+            record.id, len(message),
+        )
+        return AlertOutcome(
+            STATUS_READY,
+            "prepared; ALERT_DELIVERY=ready so nothing was sent",
+            message,
+        )
+
+    if not settings.alerts_enabled or not alerts_configured(settings):
+        logger.warning(
+            "HIGH risk but the WhatsApp transport is not configured -- "
+            "the message is still stored on the row"
+        )
+        return AlertOutcome(
+            STATUS_NOT_CONFIGURED,
+            "WhatsApp delivery selected but not configured "
+            "(set ZERNIO_INBOX_ACCOUNT_ID / ZERNIO_ALERT_CONVERSATION_ID "
+            "and keep ALERTS_ENABLED=true)",
+            message,
+        )
+
     try:
         message_id = send_whatsapp_alert(message, settings)
     except AlertError as exc:
         logger.error("WhatsApp alert FAILED for record id=%s: %s", record.id, exc)
-        return f"failed: {exc}"
-    return f"sent ({message_id})"
+        return AlertOutcome(f"failed: {exc}", str(exc), message)
+    return AlertOutcome(
+        f"sent ({message_id})", f"provider message id {message_id}", message
+    )
+
+
+def maybe_send_alert(record, settings: Settings | None = None) -> str:
+    """Compatibility wrapper: just the alert_status of `prepare_alert`."""
+    return prepare_alert(record, settings=settings).status

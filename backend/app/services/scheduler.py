@@ -54,6 +54,7 @@ class DueItem:
     slot: date                 # the calendar day the check-in was due
     status: str
     days_overdue: int
+    cooldown_hours: float = 0.0  # hours until this patient may be auto-dialed again (0 = now)
     content: dict[str, Any] = field(default_factory=dict)
 
 
@@ -68,6 +69,90 @@ class TickResult:
     skipped: int = 0
     planned: list[dict[str, Any]] = field(default_factory=list)
     outcomes: list[dict[str, Any]] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Per-patient automatic-call cooldown (24h window)
+# ---------------------------------------------------------------------------
+
+DIAL_STAMP_PREFIX = "schedule_last_dial:"
+
+
+def _stamp_key(patient_code: str) -> str:
+    return f"{DIAL_STAMP_PREFIX}{(patient_code or '').strip()}"
+
+
+def _coerce_naive(value: datetime) -> datetime:
+    """SQLite returns naive datetimes; tolerate aware ones from callers."""
+    return value.replace(tzinfo=None) if value.tzinfo is not None else value
+
+
+def record_dial_stamp(
+    patient_code: str,
+    at: datetime | None = None,
+    database_url: str | None = None,
+) -> None:
+    """Remember that a patient was just dialed (manual AND scheduled calls).
+
+    Bookkeeping must never break a dial: any DB problem is logged and swallowed.
+    """
+    if not (patient_code or "").strip():
+        return
+    from app.db import service as db_service
+
+    try:
+        db_service.set_setting(
+            _stamp_key(patient_code),
+            _coerce_naive(at or datetime.now()).isoformat(timespec="seconds"),
+            database_url,
+        )
+    except Exception:
+        logger.exception("Could not stamp last-dial time for %s", patient_code)
+
+
+def cooldown_state(
+    patient_code: str,
+    now: datetime | None = None,
+    settings: Settings | None = None,
+) -> tuple[float, float | None]:
+    """Return ``(hours_left, hours_since_last_dial)`` for automatic dialing.
+
+    ``hours_left`` is 0 when the patient may be auto-dialed right now;
+    ``hours_since_last_dial`` is None when the patient was never dialed.
+    Manual calls always start the window, but the window never *blocks* a
+    manual call -- only ``run_tick()`` consults it.
+    """
+    from app.db import service as db_service
+
+    settings = settings or get_settings()
+    window = max(0.0, float(settings.schedule_min_hours_between_calls or 0))
+    moment = _coerce_naive(now or datetime.now())
+    if window <= 0:
+        return 0.0, None
+    try:
+        raw = db_service.get_setting(_stamp_key(patient_code))
+    except Exception:
+        logger.exception("Could not read last-dial time for %s", patient_code)
+        return 0.0, None
+    if not raw:
+        return 0.0, None
+    try:
+        last = _coerce_naive(datetime.fromisoformat(raw))
+    except ValueError:
+        logger.warning("Ignoring malformed last-dial stamp %r", raw)
+        return 0.0, None
+    since = max(0.0, (moment - last).total_seconds() / 3600.0)
+    return max(0.0, window - since), since
+
+
+def cooldown_hours_left(
+    patient_code: str,
+    now: datetime | None = None,
+    settings: Settings | None = None,
+) -> float:
+    """Hours until this patient may be auto-dialed again (0 = right now)."""
+    left, _ = cooldown_state(patient_code, now=now, settings=settings)
+    return left
 
 
 def _parse_discharge(patient) -> date | None:
@@ -196,6 +281,9 @@ def plan_due(
         # later (that would look like a surprise call to the patient).
         if schedule["days_overdue"] > settings.schedule_grace_days:
             continue
+        left, since = cooldown_state(
+            patient.patient_code, now=now, settings=settings
+        )
         due.append(
             DueItem(
                 patient_code=patient.patient_code,
@@ -205,7 +293,14 @@ def plan_due(
                 slot=date.fromisoformat(schedule["next_call_at"][:10]),
                 status=schedule["status"],
                 days_overdue=schedule["days_overdue"],
-                content=schedule,
+                cooldown_hours=left,
+                content={
+                    **schedule,
+                    "hours_since_last_dial": (
+                        round(since, 1) if since is not None else None
+                    ),
+                    "cooldown_hours": round(left, 1),
+                },
             )
         )
     due.sort(key=lambda item: (item.days_overdue, item.patient_code), reverse=True)
@@ -221,6 +316,11 @@ def run_tick(
     The master switch is the ONLY thing that causes an automatic dial. When it
     is off, the tick still returns the full plan so the dashboard/ops endpoint
     can show "these would have been called".
+
+    Per-patient cooldown (SCHEDULE_MIN_HOURS_BETWEEN_CALLS, default 24h): a
+    patient dialed less than one window ago -- manually OR automatically --
+    stays in ``planned`` but is skipped with a "cooldown" outcome instead of
+    being dialed. Successful dials stamp the window start.
     """
     settings = settings or get_settings()
     now = now or datetime.now()
@@ -239,6 +339,7 @@ def run_tick(
             "status": item.status,
             "days_overdue": item.days_overdue,
             "diagnosis_category": item.diagnosis_category,
+            "cooldown_hours": round(item.cooldown_hours, 1),
         }
         for item in due
     ]
@@ -265,20 +366,44 @@ def run_tick(
         result.skipped = len(due)
         return result
 
-    budget = settings.schedule_max_dials_per_tick or len(due)
-    for item in due[:budget]:
+    window = float(settings.schedule_min_hours_between_calls or 0)
+    dial_queue = [item for item in due if item.cooldown_hours <= 0]
+    for item in due:
+        if item.cooldown_hours > 0:
+            detail = (
+                f"Auto-dialed {item.content.get('hours_since_last_dial', '?')}h ago; "
+                f"next automatic dial in {round(item.cooldown_hours, 1)}h "
+                f"(SCHEDULE_MIN_HOURS_BETWEEN_CALLS={window:g})."
+            )
+            logger.info("Scheduler tick: %s skipped by 24h cooldown: %s", item.patient_code, detail)
+            result.outcomes.append(
+                {
+                    "patient_code": item.patient_code,
+                    "status": "cooldown",
+                    "detail": detail,
+                }
+            )
+            result.skipped += 1
+
+    budget = settings.schedule_max_dials_per_tick or len(dial_queue)
+    for item in dial_queue[:budget]:
         outcome = _dial(item, settings)
         result.outcomes.append(outcome)
         if outcome.get("status") == "dialing":
             result.dialed += 1
+            # The dial went out: this moment starts the patient's next 24h
+            # window (manual dials stamp the same way in POST /calls).
+            record_dial_stamp(
+                item.patient_code, at=now, database_url=settings.database_url
+            )
         else:
             result.skipped += 1
-    if len(due) > budget:
-        result.skipped += len(due) - budget
+    if len(dial_queue) > budget:
+        result.skipped += len(dial_queue) - budget
         logger.info(
             "Scheduler tick: %d more due patient(s) deferred to the next tick "
             "(SCHEDULE_MAX_DIALS_PER_TICK=%s).",
-            len(due) - budget,
+            len(dial_queue) - budget,
             budget,
         )
     return result
@@ -351,14 +476,18 @@ def _dial(item: DueItem, settings: Settings) -> dict[str, Any]:
 _scheduler = None  # BackgroundScheduler once started
 
 
-def start(settings: Settings | None = None):
-    """Start the interval job when SCHEDULE_CALLS_ENABLED=true.
+def start(settings: Settings | None = None, *, tick_now: bool = True):
+    """Start the interval job when the master switch is on.
 
     Returns the scheduler (or None when disabled). The job is deliberately
     low-frequency (SCHEDULE_INTERVAL_MINUTES) and every tick re-checks the cost
     rails, so a forgotten switch cannot run up a bill:
     SCHEDULE_MAX_DIALS_PER_TICK caps each tick, and the hourly/daily budgets cap
     the day.
+
+    ``tick_now`` runs one pass straight away (startup behaviour: a restart
+    picks up due patients). The dashboard toggle passes ``tick_now=False`` so
+    that ARMING THE SWITCH NEVER DIALS BY ITSELF.
     """
     global _scheduler
     settings = settings or get_settings()
@@ -389,17 +518,19 @@ def start(settings: Settings | None = None):
     _scheduler.start()
     logger.info(
         "Scheduler started: check-in tick every %d min (slots %02d:%02d local, "
-        "offsets %s days, max %s dial(s)/tick, dry_run=%s)",
+        "offsets %s days, max %s dial(s)/tick, min %sg between calls, dry_run=%s)",
         minutes,
         settings.schedule_hour,
         settings.schedule_minute,
         settings.checkin_day_offsets,
         settings.schedule_max_dials_per_tick,
+        settings.schedule_min_hours_between_calls,
         settings.schedule_dry_run,
     )
-    # Run one tick straight away so a backend restart picks up due patients
-    # without waiting for the first interval.
-    run_tick(settings=settings)
+    if tick_now:
+        # Run one tick straight away so a backend restart picks up due patients
+        # without waiting for the first interval.
+        run_tick(settings=settings)
     return _scheduler
 
 
@@ -436,5 +567,57 @@ def status(settings: Settings | None = None) -> dict[str, Any]:
         "slot_local_time": f"{settings.schedule_hour:02d}:{settings.schedule_minute:02d}",
         "grace_days": settings.schedule_grace_days,
         "max_dials_per_tick": settings.schedule_max_dials_per_tick,
+        "min_hours_between_calls": float(settings.schedule_min_hours_between_calls or 0),
         "next_tick_at": next_run.isoformat() if next_run else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Runtime master switch (toggled from the dashboard, persisted in the DB)
+# ---------------------------------------------------------------------------
+
+SWITCH_KEY = "schedule_calls_enabled"
+
+
+def set_switch(enabled: bool, settings: Settings | None = None) -> dict[str, Any]:
+    """Turn the master switch on/off at runtime and persist the choice.
+
+    Arming starts the interval job WITHOUT an immediate tick -- flipping the
+    switch must never place a call by itself; due patients are dialed on the
+    next tick or an explicit run-now, through the usual cost rails.
+    """
+    from app.db import service as db_service
+
+    settings = settings or get_settings()
+    settings.schedule_calls_enabled = bool(enabled)
+    db_service.set_setting(SWITCH_KEY, "true" if enabled else "false")
+    if enabled:
+        start(settings, tick_now=False)
+    else:
+        stop()
+    logger.info(
+        "Scheduler switch turned %s (persisted to the DB)",
+        "ON" if enabled else "OFF",
+    )
+    return status(settings)
+
+
+def apply_saved_switch(settings: Settings | None = None) -> bool:
+    """Re-apply a persisted switch after a restart (startup path).
+
+    Returns the effective enabled state: the saved DB row wins when present,
+    otherwise the .env SCHEDULE_CALLS_ENABLED default stands (fresh database).
+    """
+    from app.db import service as db_service
+
+    settings = settings or get_settings()
+    saved = db_service.get_setting(SWITCH_KEY)
+    if saved is None:
+        return bool(settings.schedule_calls_enabled)
+    settings.schedule_calls_enabled = saved == "true"
+    logger.info(
+        "Scheduler switch restored from the database: %s",
+        "ON" if settings.schedule_calls_enabled else "OFF",
+    )
+    return settings.schedule_calls_enabled
+

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from app.core.security import AuthContext, require_auth, require_roles
 from app.db import service as db_service
 from app.db.models import Patient
+from app.services.dialogue import CATEGORIES as DIAGNOSIS_CATEGORIES
 
 logger = logging.getLogger("voicecare.records")
 
@@ -66,6 +67,7 @@ def _record_to_dict(r) -> dict:
         "findings": r.get_findings(),
         "alert_status": r.alert_status,
         "alert_detail": r.alert_detail,
+        "alert_message": r.alert_message,
         "reviewed": r.reviewed,
         "nurse_note": r.nurse_note,
         "closed_by": r.closed_by,
@@ -170,11 +172,19 @@ def get_patients(
 def upsert_patient(
     body: PatientUpsert, context: AuthContext = Depends(require_roles("admin"))
 ) -> dict:
-    """Create or update a patient record (matched on patient_code)."""
-    if body.diagnosis_category not in ("general", "surgical", "cardiac"):
+    """Create or update a patient record (matched on patient_code).
+
+    The dashboard's "Edit" action is this same endpoint: the form comes back
+    pre-filled from GET /records/patients and posting it updates the existing
+    row (status "updated") instead of creating a duplicate.
+    """
+    if body.diagnosis_category not in DIAGNOSIS_CATEGORIES:
         raise HTTPException(
             status_code=422,
-            detail="diagnosis_category must be general | surgical | cardiac",
+            detail=(
+                "diagnosis_category must be one of: "
+                + ", ".join(sorted(DIAGNOSIS_CATEGORIES))
+            ),
         )
     action, patient = db_service.upsert_patient(
         patient_code=body.patient_code.strip(),

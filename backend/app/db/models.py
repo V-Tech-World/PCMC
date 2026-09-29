@@ -39,7 +39,7 @@ class Patient(SQLModel, table=True):
     patient_code: str = Field(unique=True, index=True)     # e.g. "P-0001"
     name: str = ""
     phone_number: str = ""                                  # E.164, e.g. +9477...
-    diagnosis_category: str = "general"                     # general|surgical|cardiac
+    diagnosis_category: str = "general"                     # dialogue.CATEGORIES key
     discharge_date: str = ""                                # ISO date, free-form
     notes: str = ""
     language_pref: str = "en"                               # en|ta|si (Step 10)
@@ -83,8 +83,12 @@ class CallRecord(SQLModel, table=True):
     risk_reasons_json: str = Field(default="", sa_column=Column(Text))
     findings_json: str = Field(default="", sa_column=Column(Text))
 
-    alert_status: str = "not_sent"   # not_sent|sent|failed|skipped|not_applicable
-    alert_detail: str = ""           # provider message id or the failure reason
+    alert_status: str = "not_sent"   # not_sent|ready|sent|failed|skipped|not_configured
+    alert_detail: str = ""           # why, or the provider message id
+    # The alert text itself, prepared at the end of every HIGH-risk call. Kept
+    # on the row so the dashboard can show/copy it even when nothing is sent
+    # (ALERT_DELIVERY=ready -- see app/services/alerts.py).
+    alert_message: str = Field(default="", sa_column=Column(Text))
 
     # -- Dashboard workflow (Step 9) -------------------------------------------
     reviewed: bool = False           # nurse marked the alert/case reviewed
@@ -113,3 +117,17 @@ class CallRecord(SQLModel, table=True):
 
     def get_findings(self) -> list[dict]:
         return json.loads(self.findings_json) if self.findings_json else []
+
+
+class AppSetting(SQLModel, table=True):
+    """Tiny key/value store for dashboard-controlled runtime flags.
+
+    Lets the Schedule screen turn the Step 8 master switch on/off without
+    editing backend/.env -- .env stays the default for a fresh database, and a
+    saved row wins after an admin has toggled it (so the choice survives a
+    backend restart).
+    """
+
+    key: str = Field(primary_key=True)
+    value: str = ""
+

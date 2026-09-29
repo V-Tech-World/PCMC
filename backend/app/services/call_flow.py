@@ -269,10 +269,13 @@ async def _persist_and_alert(
     patient_code: str | None,
     started_at: datetime,
 ) -> None:
-    """Save the CallRecord row and fire the HIGH-risk WhatsApp alert.
+    """Save the CallRecord row and prepare the HIGH-risk alert (Step 7).
 
-    Never raises: a persistence/alert problem must not mask the call flow's
-    own CallEnded, and the risk decision is also in the logs.
+    Step 7 rework: the alert text is always built for a HIGH-risk call and
+    stored on the row (status 'ready' unless ALERT_DELIVERY=whatsapp), so the
+    care team's message is ready in the dashboard even with no delivery channel
+    configured. Never raises: a persistence/alert problem must not mask the
+    call flow's own CallEnded, and the risk decision is also in the logs.
     """
     try:
         assessment = assessment or dialogue.assess_risk()
@@ -291,15 +294,22 @@ async def _persist_and_alert(
         )
         if record is None:
             return
-        status = await asyncio.to_thread(alerts_service.maybe_send_alert, record, settings)
+        outcome = await asyncio.to_thread(
+            alerts_service.prepare_alert, record, None, settings
+        )
         await asyncio.to_thread(
             db_service.attach_alert,
             record.id,
-            status,
-            detail="",
+            outcome.status,
+            detail=outcome.detail,
+            message=outcome.message,
             database_url=settings.database_url,
         )
-        logger.info("Alert status for record %d: %s", record.id, status)
+        logger.info(
+            "Alert for record %d: status=%s (%s) -- %d-char message stored",
+            record.id, outcome.status, outcome.detail or "no detail",
+            len(outcome.message),
+        )
     except Exception:
         logger.exception("Persist/alert step failed (risk decision is in the logs)")
 

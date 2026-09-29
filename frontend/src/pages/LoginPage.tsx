@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { ApiError } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { Spinner } from "../components/ui";
 
@@ -11,6 +11,11 @@ import { Spinner } from "../components/ui";
  *
  * The role tabs only pick the Employee-ID placeholder -- the real role comes
  * from the account (nurse|doctor|admin), so tabs can never escalate rights.
+ *
+ * The card carries `.login-card` (see index.css): it stays LIGHT even in dark
+ * mode so form values never inherit the page's light-on-dark text colour.
+ * "Forgot password?" flips the form into a self-service reset (employee ID +
+ * new password + confirm -- no admin, no third-party call).
  */
 const ROLE_TABS = [
   { id: "doctor", label: "Doctor", placeholder: "DR001" },
@@ -21,12 +26,15 @@ const ROLE_TABS = [
 export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [mode, setMode] = useState<"login" | "reset">("login");
   const [tab, setTab] = useState<(typeof ROLE_TABS)[number]["id"]>("doctor");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [hospital, setHospital] = useState("Colombo National Hospital");
   const [error, setError] = useState("");
-  const [hint, setHint] = useState("");
+  const [notice, setNotice] = useState(""); // green success banner (reset done)
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -48,6 +56,40 @@ export default function LoginPage() {
     }
   }
 
+  /** Forgot-password: employee ID + new password + confirm. The backend
+   * updates the hash directly -- no admin approval, no third party. */
+  async function onReset(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    if (newPassword.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError("New password and confirmation do not match.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const resp = await api.post<{ message?: string }>("/auth/reset-password", {
+        username: username.trim(),
+        new_password: newPassword,
+        confirm_password: confirmPassword,
+      });
+      setMode("login");
+      setPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setNotice(resp.message ?? "Password updated -- sign in with your new password.");
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Reset failed -- try again.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="relative grid min-h-screen place-items-center overflow-hidden bg-gradient-to-br from-brand-500 to-brand-800 p-4">
       {/* decorative floating orbs (purely visual) */}
@@ -60,7 +102,7 @@ export default function LoginPage() {
         style={{ animationDelay: "1.5s" }}
         aria-hidden="true"
       />
-      <div className="pop-in relative w-full max-w-md rounded-2xl bg-white p-8 shadow-2xl">
+      <div className="login-card pop-in relative w-full max-w-md rounded-2xl bg-white p-8 shadow-2xl">
         <div className="text-center">
           <img
             src="/logo-horizontal.svg"
@@ -73,6 +115,7 @@ export default function LoginPage() {
           <p className="text-sm text-neutral-500">Colombo National Hospital</p>
         </div>
 
+        {mode === "login" && (
         <div
           className="mt-6 grid grid-cols-3 rounded-lg bg-neutral-100 p-1"
           role="tablist"
@@ -95,8 +138,20 @@ export default function LoginPage() {
             </button>
           ))}
         </div>
+        )}
 
-        <form onSubmit={onSubmit} className="mt-6 space-y-4">
+        <form
+          onSubmit={mode === "login" ? onSubmit : onReset}
+          className="mt-6 space-y-4"
+        >
+          {mode === "reset" && (
+            <p className="text-sm text-neutral-600">
+              Set a new password for your employee ID. It takes effect
+              immediately -- no approval or extra calls needed.
+            </p>
+          )}
+          {mode === "login" ? (
+            <>
           <div>
             <label
               htmlFor="hospital"
@@ -190,6 +245,66 @@ export default function LoginPage() {
               </button>
             </div>
           </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <label
+                  htmlFor="reset-employee-id"
+                  className="mb-1 block text-sm font-bold text-neutral-700"
+                >
+                  Employee ID
+                </label>
+                <input
+                  id="reset-employee-id"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder={activeTab.placeholder}
+                  autoComplete="username"
+                  required
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-2.5 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="new-password"
+                  className="mb-1 block text-sm font-bold text-neutral-700"
+                >
+                  New password
+                </label>
+                <input
+                  id="new-password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="At least 6 characters"
+                  autoComplete="new-password"
+                  required
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-2.5 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="confirm-password"
+                  className="mb-1 block text-sm font-bold text-neutral-700"
+                >
+                  Confirm new password
+                </label>
+                <input
+                  id="confirm-password"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Repeat the new password"
+                  autoComplete="new-password"
+                  required
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-2.5 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                />
+              </div>
+            </>
+          )}
 
           {error && (
             <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
@@ -204,22 +319,48 @@ export default function LoginPage() {
           >
             <span className="inline-flex items-center justify-center gap-2">
               {busy && <Spinner className="h-4 w-4" />}
-              {busy ? "Signing in…" : "Login to Dashboard"}
+              {busy
+                ? mode === "login"
+                  ? "Signing in…"
+                  : "Saving…"
+                : mode === "login"
+                  ? "Login to Dashboard"
+                  : "Update password"}
             </span>
           </button>
         </form>
 
         <div className="mt-4 text-center">
-          <button
-            type="button"
-            onClick={() =>
-              setHint("Demo build -- ask your system administrator to reset it.")
-            }
-            className="text-sm font-semibold text-brand-700 hover:underline"
-          >
-            Forgot password?
-          </button>
-          {hint && <p className="mt-1 text-xs text-neutral-500">{hint}</p>}
+          {mode === "login" ? (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("reset");
+                  setError("");
+                }}
+                className="text-sm font-semibold text-brand-700 hover:underline"
+              >
+                Forgot password?
+              </button>
+              {notice && (
+                <p className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
+                  {notice}
+                </p>
+              )}
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setMode("login");
+                setError("");
+              }}
+              className="text-sm font-semibold text-brand-700 hover:underline"
+            >
+              ← Back to login
+            </button>
+          )}
         </div>
       </div>
     </div>

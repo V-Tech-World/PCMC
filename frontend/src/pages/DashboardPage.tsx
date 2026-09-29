@@ -153,7 +153,7 @@ export default function DashboardPage() {
           label="Open alerts"
           value={c.alerts_open}
           icon={ICON_BELL}
-          hint={`${c.alerts_sent} WhatsApp alert(s) sent`}
+          hint={`${c.alerts_ready ?? 0} message(s) ready to send · ${c.alerts_sent} sent`}
         />
         <StatCard
           label="Active patients"
@@ -210,7 +210,7 @@ export default function DashboardPage() {
                     {summary.recent_calls.map((row) => (
                       <tr
                         key={row.id}
-                        className="border-b border-neutral-100 dark:border-neutral-700/60 hover:bg-brand-50 dark:hover:bg-white/5/50 dark:hover:bg-white/5"
+                        className="border-b border-neutral-100 dark:border-neutral-700/60 hover:bg-brand-50 dark:hover:bg-white/5"
                       >
                         <td className="whitespace-nowrap px-2 py-2">
                           {fmtDateTime(row.started_at)}
@@ -266,9 +266,9 @@ export default function DashboardPage() {
                 {summary.open_alerts.map((row) => (
                   <li
                     key={row.id}
-                    className="flex items-center justify-between gap-2 rounded-lg bg-red-50 px-3 py-2"
+                    className="flex items-center justify-between gap-2 rounded-lg bg-red-50 px-3 py-2 dark:bg-red-950/40"
                   >
-                    <span className="text-sm font-semibold text-red-800">
+                    <span className="text-sm font-semibold text-red-800 dark:text-red-200">
                       {row.patient_code || row.phone_number}
                     </span>
                     <RiskBadge level={row.risk_level} score={row.risk_score} />

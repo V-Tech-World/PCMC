@@ -155,12 +155,12 @@ export default function StaffPage() {
                 {staff.map((u) => (
                   <tr
                     key={u.username}
-                    className="border-b border-neutral-100 dark:border-neutral-700/60 hover:bg-brand-50 dark:hover:bg-white/5/50 dark:hover:bg-white/5"
+                    className="border-b border-neutral-100 dark:border-neutral-700/60 hover:bg-brand-50 dark:hover:bg-white/5"
                   >
                     <td className="px-2 py-2 font-semibold">{u.username}</td>
                     <td className="px-2 py-2">{u.display_name}</td>
                     <td className="px-2 py-2">
-                      <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-bold uppercase text-brand-800">
+                      <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-bold uppercase text-brand-800 dark:bg-[#15251c] dark:text-brand-200">
                         {u.role}
                       </span>
                     </td>

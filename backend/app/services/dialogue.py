@@ -20,7 +20,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from app.services.nlp import assess_conversation, interpret_yes_no  # noqa: F401
+from app.services.nlp import (  # noqa: F401
+    assess_conversation,
+    extract_severity,
+    interpret_yes_no,
+)
 
 __all__ = [
     "CATEGORIES",
@@ -45,6 +49,10 @@ logger = logging.getLogger("voicecare.dialogue")
 # them a beat to wait, then the question they must actually answer.
 _YES_NO_LEAD = "Please answer yes or no. "
 
+# One question per discharge type. Adding a type here is all the dialogue and
+# the /calls + /records/patients validation need -- the risk scorer adds the
+# matching `category_<name>` rule in nlp.assess_conversation, and the dashboard
+# dropdown reads the same keys from the API.
 CATEGORIES: dict[str, str] = {
     "general": _YES_NO_LEAD + "Do you have any fever, chills, or vomiting?",
     "surgical": (
@@ -53,6 +61,19 @@ CATEGORIES: dict[str, str] = {
     "cardiac": (
         _YES_NO_LEAD
         + "Have you had any breathlessness or chest pain since leaving the hospital?"
+    ),
+    # Respiratory discharge: the follow-up that matters is a NEW or worsening
+    # cough / wheeze / breathing trouble at home, not the chronic baseline.
+    "respiratory": (
+        _YES_NO_LEAD
+        + "Have you had any new cough, wheezing, or trouble breathing at home?"
+    ),
+    # Diabetic discharge: foot care and hypoglycaemia are the two things that
+    # send these patients back to hospital, so they share one closed question.
+    "diabetic": (
+        _YES_NO_LEAD
+        + "Have you had any dizziness, blurred vision, or a sore on your foot "
+        "that is not healing?"
     ),
 }
 
@@ -233,6 +254,19 @@ class CallDialogue:
             answer.interpretation = interpret_yes_no(transcript)
         elif question.kind == "choice":
             answer.interpretation = extract_choice(transcript, question.choices)
+            if answer.interpretation is None:
+                # The patient does not have to use the scripted word: "very
+                # bad", "a lot of pain", "10/10", "can't bear it" all answer
+                # the severity question. Fall back to the NLP severity
+                # extractor so an unparsed grading is not silently dropped --
+                # a live severe call scored LOW (1) exactly that way.
+                level = extract_severity(transcript)
+                if level is not None and level in question.choices:
+                    answer.interpretation = level
+                    logger.info(
+                        "Choice answer %r read as %r by the NLP severity fallback",
+                        transcript, level,
+                    )
         self.answers[question.id] = answer
         logger.info(
             "Answer recorded: question=%s kind=%s interpretation=%r transcript=%r",

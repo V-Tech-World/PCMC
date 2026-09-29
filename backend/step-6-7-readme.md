@@ -1,9 +1,10 @@
-# Step 6 + 7 -- Database (SQLModel + SQLite) + WhatsApp Alerts -- COMPLETE
+# Step 6 + 7 -- Database (SQLModel + SQLite) + HIGH-risk alerts -- COMPLETE
 
 Steps 6 and 7 of the VoiceCare LK backend, built together: every call is now
 persisted in SQLite (patients table + one row per call) and every **HIGH-risk
-call pushes a WhatsApp alert to the care team** through the Zernio sandbox
-inbox. 19 new offline tests; full suite: **141 passed, 1 deselected**.
+call produces an alert message that is stored on the row** (delivered to
+WhatsApp only when `ALERT_DELIVERY=whatsapp`). 19 new offline tests; full
+suite: **224 passed, 1 deselected**.
 
 ## Step 6 -- Database
 
@@ -91,7 +92,52 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -q
   `backend/live-test-plan.md`.
 - SQLite is the right store for this single-instance deployment; the SQLModel
   models port to Postgres later by changing `DATABASE_URL`.
-- Alerts are sent once, right after the call, with the stored status on the
-  row; a retry queue can be added on top of `attach_alert` if needed.
+- With the default `ALERT_DELIVERY=ready` nothing leaves the backend: the
+  message sits on the row until a human sends it (dashboard Copy button). A
+  retry queue can be added on top of `attach_alert` when a channel exists.
 - WhatsApp rate limit applies per recipient (fine: one alert per call, one
   care-team recipient).
+
+---
+
+## Change log -- 29 Sep 2026 (alerts reworked: prepare first, deliver on request)
+
+**Why.** Delivery rode on the Zernio *inbox sandbox* thread, which is a test
+surface rather than a hospital channel, so nothing in the demo could depend on
+a message actually leaving the backend. The alert *content* was the valuable
+part, so the content is now guaranteed and the transport is optional.
+
+**What changed**
+
+| | before | now |
+|---|---|---|
+| HIGH-risk call | build text -> POST to the sandbox | build text -> store on the row (`alert_status = ready`) -> *optionally* POST |
+| transport switch | none | `ALERT_DELIVERY` = `ready` (default) \| `whatsapp` |
+| unconfigured / disabled | `not_configured`, message lost | `not_configured`, **message still stored** |
+| call row | `alert_status`, `alert_detail` | + `alert_message` (full text) |
+| dashboard | "sent / not configured" | call detail shows the message with a **Copy** button; Calls column chip = Ready to send / Sent / Not sent; cards add `alerts_ready` |
+
+**Code**
+
+- `services/alerts.py`: `prepare_alert(record, patient=None, settings)` returns
+  an `AlertOutcome(status, detail, message)`; `delivery_mode()` normalises
+  `ALERT_DELIVERY` (unknown value -> warn + `ready`, never send); the old
+  `maybe_send_alert` remains as a status-only wrapper.
+- `db/models.py`: `CallRecord.alert_message` (added by the existing
+  `_sync_new_columns` ALTER-TABLE sync -- no data migration needed).
+- `db/service.py`: `attach_alert(..., message=...)` stores it;
+  `stats()` now also counts `alerts_ready` (and matches `sent (<id>)`, which
+  the old exact-match check never actually counted).
+- `services/call_flow.py`: `_persist_and_alert()` calls `prepare_alert` and logs
+  `Alert for record N: status=... (detail) -- N-char message stored`.
+- `api/records.py` exposes `alert_message`; `api/dashboard.py` exposes
+  `alerts.delivery` + a channel label that matches the mode.
+- Frontend: `CallDetail` renders the prepared message (Copy), `CallsPage` shows
+  the alert chip, `types.ts` carries `alert_message` / `alerts_ready`.
+
+**Tests** (`test_step7.py`, rewritten around the two modes): default mode
+prepares and never calls the provider; `whatsapp` mode still posts and stores
+the same text; provider rejection, unconfigured, disabled and unknown-mode
+cases; full `run_call` flows for a HIGH call (`ready` + message on the row),
+a HIGH call with the transport on (`sent (msg_live)`), and a low call
+(`skipped`, no message).

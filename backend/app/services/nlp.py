@@ -69,6 +69,70 @@ def _is_negated(tokens: list[str], start: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Phrases that look like symptoms but are not
+# ---------------------------------------------------------------------------
+
+# Some trigger words also appear in harmless everyday phrases. "blood" as a
+# bleeding red flag would otherwise fire on "I checked my blood pressure this
+# morning" and page the care team. Benign phrases are masked (blanked) before
+# extraction: same token count, same positions, so windows and negation checks
+# stay aligned.
+_BENIGN_PHRASES: tuple[str, ...] = (
+    "blood pressure", "blood test", "blood tests", "blood sugar",
+    "blood sample", "blood group", "blood count", "blood report",
+    "blood result", "blood culture", "blood thinner", "blood thinners",
+    "cough syrup", "cough medicine", "cough tablet", "cough tablets",
+    "pain killer", "pain killers", "painkiller", "painkillers",
+    "pain relief", "pain clinic", "chest x ray",
+)
+
+
+def _mask_benign(tokens: list[str]) -> list[str]:
+    """Blank the tokens of every benign phrase, keeping token positions."""
+    masked = list(tokens)
+    for phrase in _BENIGN_PHRASES:
+        ptoks = phrase.split()
+        plen = len(ptoks)
+        for start in range(len(tokens) - plen + 1):
+            if masked[start:start + plen] == ptoks:
+                for i in range(start, start + plen):
+                    masked[i] = "_"
+    return masked
+
+
+# ---------------------------------------------------------------------------
+# Self-negated phrases ("I can't move my left arm")
+# ---------------------------------------------------------------------------
+
+# A few symptom phrases contain their own negation -- "can't breathe", "can't
+# move my arm". The windowed negation check above would cancel them (the
+# "can't" sits inside the window before "move my arm"), and listing every
+# filler ("left arm", "right leg", "fingers") as a trigger phrase does not
+# scale. So these are matched by a small regex layer instead, which requires
+# the ability verb and an explicit limb/sense word: "I can't move my left arm"
+# is a red flag, "I can move my arm" is not.
+_SELF_NEGATED_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(
+        r"\b(?:can't|cannot|couldn't|could not|unable to|not able to)\s+"
+        r"(?:move|feel|use|lift)\s+(?:my|the)\s+(?:\w+\s+)?"
+        r"(?:arm|leg|hand|foot|feet|fingers|toes|face)\b"
+    ), "neuro_deficit"),
+    (re.compile(
+        r"\b(?:can't|cannot|couldn't|could not|unable to|not able to)\s+"
+        r"(?:catch|get)\s+(?:my|a)\s+(?:deep\s+)?breath\b"
+    ), "breathlessness"),
+    (re.compile(
+        r"\b(?:can't|cannot|couldn't|could not|unable to)\s+"
+        r"(?:breathe|breath|get enough air)\b"
+    ), "breathlessness"),
+    (re.compile(
+        r"\b(?:can't|cannot|couldn't|could not|unable to)\s+"
+        r"(?:pass|pee|urinate)\b"
+    ), "urine_problem"),
+)
+
+
+# ---------------------------------------------------------------------------
 # Yes / no interpretation
 # ---------------------------------------------------------------------------
 
@@ -85,16 +149,37 @@ _NO_WORDS: frozenset[str] = frozenset({
 })
 
 
+_ANSWER_WORDS: frozenset[str] = _YES_WORDS | _NO_WORDS
+
+
 def interpret_yes_no(transcript: str | None) -> bool | None:
     """Negation-aware yes/no interpretation.
 
-    NO-words are checked first so "no pain" / "not really" / "didn't take it"
-    are not read as yes. Returns None when the transcript is empty or has no
-    recognisable yes/no signal (Step 4 TC4: handled without crashing).
+    The answer word comes FIRST on a real call: "yes, it is not healing",
+    "no, I feel fine". Scanning for a negation cue anywhere in the sentence (as
+    this did before) read the first of those as NO, because the patient echoed
+    the question's own wording ("... a sore on your foot that is not
+    healing?"). So:
+
+    1. a transcript made only of answer words ("yes", "no no", "yes no") is
+       still read conservatively -- NO wins, so a contradictory answer can
+       never be upgraded into a yes;
+    2. otherwise the word the patient starts with decides;
+    3. if they start with neither, the old negation-first scan runs
+       ("I have no pain" -> False, "I did take them" -> True).
+
+    Returns None when the transcript is empty or has no recognisable yes/no
+    signal (Step 4 TC4: handled without crashing).
     """
     tokens = _tokens(transcript)
     if not tokens:
         return None
+    if all(tok in _ANSWER_WORDS for tok in tokens):
+        return not any(tok in _NO_WORDS for tok in tokens)
+    if tokens[0] in _YES_WORDS:
+        return True
+    if tokens[0] in _NO_WORDS:
+        return False
     if any(tok in _NO_WORDS for tok in tokens):
         return False
     if any(tok in _YES_WORDS for tok in tokens):
@@ -108,17 +193,82 @@ def interpret_yes_no(transcript: str | None) -> bool | None:
 
 _SEVERITY_LEVELS = ("mild", "moderate", "severe")
 
+# Single-word cues. "bad" is deliberately only MODERATE -- patients say "very
+# bad" / "so bad" for severe pain, and those are handled by _SEVERITY_PHRASES.
 _SEVERITY_CUES: dict[str, str] = {
-    "mild": "mild", "slight": "mild", "slightly": "mild",
-    "moderate": "moderate", "medium": "moderate",
-    "severe": "severe", "terrible": "severe", "awful": "severe",
-    "unbearable": "severe", "excruciating": "severe", "intense": "severe",
-    "horrible": "severe", "worst": "severe",
+    "mild": "mild", "slight": "mild", "slightly": "mild", "minor": "mild",
+    "moderate": "moderate", "medium": "moderate", "bad": "moderate",
+    "severe": "severe", "severely": "severe", "terrible": "severe",
+    "awful": "severe", "unbearable": "severe", "excruciating": "severe",
+    "intense": "severe", "horrible": "severe", "worst": "severe",
+    "agony": "severe", "agonising": "severe", "agonizing": "severe",
 }
+
+# Multi-word cues, checked BEFORE the single words and consuming (masking) the
+# tokens they cover. Without that masking the "bad" in "not too bad" would read
+# as MODERATE, and the "bad" in "very bad" would be capped at MODERATE.
+# Longest phrase first.
+_SEVERITY_PHRASES: tuple[tuple[str, str], ...] = (
+    ("a lot of pain", "severe"), ("lots of pain", "severe"),
+    ("so much pain", "severe"), ("not too bad", "mild"),
+    ("not that bad", "mild"), ("not a lot", "mild"),
+    ("not that much", "mild"), ("a little bit", "mild"), ("just a bit", "mild"),
+    ("very bad", "severe"), ("really bad", "severe"), ("so bad", "severe"),
+    ("very painful", "severe"), ("really painful", "severe"),
+    ("can't bear", "severe"), ("cannot bear", "severe"),
+    ("not bad", "mild"), ("not too much", "mild"),
+    ("a little", "mild"), ("a bit of", "mild"),
+    ("a lot", "moderate"), ("lots", "moderate"),
+)
+
+# Spoken/written pain scales: "10 out of 10", "8/10", "3 out of ten".
+_NUMERIC_SEVERITY_RE = re.compile(r"\b(10|[1-9])\s*(?:/|out of)\s*(?:10|ten)\b")
 
 _SEVERITY_BONUS: dict[str | None, int] = {
     None: 0, "mild": 0, "moderate": 1, "severe": 2,
 }
+
+
+def _severity_from_tokens(tokens: list[str], text: str | None = None) -> str | None:
+    """Highest (worst) severity cue in `tokens`, or None.
+
+    Phrase cues are evaluated first and mask the tokens they cover, so
+    "not too bad" stays MILD instead of being read as the single word "bad".
+    `text` is the raw string the tokens came from; it is only used to read
+    numeric pain scales ("8/10"), which tokenisation drops.
+
+    The WORST level wins, not the first one: "it was mild this morning but it
+    is severe now" is a severe report (first-match-wins under-scored it).
+    """
+    levels: list[str] = []
+    masked = list(tokens)
+
+    for phrase, level in _SEVERITY_PHRASES:
+        ptoks = phrase.split()
+        plen = len(ptoks)
+        for start in range(len(tokens) - plen + 1):
+            # Match against the masked list so a phrase can't re-consume tokens
+            # already claimed by a longer one ("not a lot" before "a lot").
+            if masked[start:start + plen] == ptoks:
+                levels.append(level)
+                for i in range(start, start + plen):
+                    masked[i] = "_"
+
+    for tok in masked:
+        level = _SEVERITY_CUES.get(tok)
+        if level:
+            levels.append(level)
+
+    if text:
+        for match in _NUMERIC_SEVERITY_RE.finditer(text.lower()):
+            rating = int(match.group(1))
+            levels.append(
+                "severe" if rating >= 7 else "moderate" if rating >= 4 else "mild"
+            )
+
+    if not levels:
+        return None
+    return max(levels, key=_SEVERITY_LEVELS.index)
 
 
 def extract_severity(transcript: str | None) -> str | None:
@@ -126,25 +276,28 @@ def extract_severity(transcript: str | None) -> str | None:
 
     Used for the pain-severity follow-up ("How strong is the pain? Mild,
     moderate, or severe?") and to qualify symptoms found in free text.
-    Returns None when no severity word is present.
+    Understands the scripted words, common lay phrasing ("very bad", "a lot of
+    pain", "can't bear it", "not too bad") and numeric scales ("8/10").
+    Returns None when no severity signal is present.
     """
-    tokens = _tokens(transcript)
-    for tok in tokens:
-        level = _SEVERITY_CUES.get(tok)
-        if level:
-            return level
-    return None
+    text = transcript or ""
+    tokens = _tokens(text)
+    if not tokens and not _NUMERIC_SEVERITY_RE.search(text.lower()):
+        return None
+    return _severity_from_tokens(tokens, text)
 
 
 def _severity_near(tokens: list[str], start: int, end: int) -> str | None:
-    """Severity word within 3 tokens before or after a symptom mention."""
+    """Severity cue within 3 tokens before or after a symptom mention.
+
+    Windowed on purpose: a severity word from another sentence must not be
+    attached to this symptom. Numeric scales are not read here (tokenisation
+    drops the digits) -- those are transcript-wide and reach the score through
+    the structured severity answer instead.
+    """
     lo = max(0, start - 3)
     hi = min(len(tokens), end + 3)
-    for tok in tokens[lo:hi]:
-        level = _SEVERITY_CUES.get(tok)
-        if level:
-            return level
-    return None
+    return _severity_from_tokens(tokens[lo:hi])
 
 
 # ---------------------------------------------------------------------------
@@ -169,27 +322,59 @@ _SYMPTOMS: tuple[SymptomDef, ...] = (
     SymptomDef("chest_pain", "chest pain",
                ("chest pain", "pain in my chest", "pain in the chest",
                 "chest discomfort", "chest tightness", "tightness in my chest",
-                "pressure on my chest", "pressure in my chest"),
+                "pressure on my chest", "pressure in my chest",
+                "chest hurts", "chest is hurting", "my chest hurts",
+                "chest feels heavy", "heavy in my chest", "chest feels tight",
+                "tight chest", "chest is tight", "crushing chest",
+                "squeezing in my chest"),
                red_flag=True, points=5),
     SymptomDef("breathlessness", "breathlessness",
                ("breathless", "breathlessness", "short of breath",
                 "shortness of breath", "hard to breathe", "hard to breath",
                 "can't breathe", "cannot breathe", "struggling to breathe",
-                "difficulty breathing", "trouble breathing"),
+                "difficulty breathing", "trouble breathing", "gasping",
+                "gasping for air", "suffocating", "can't catch my breath",
+                "cannot catch my breath", "couldn't catch my breath",
+                "can't get my breath", "cannot get my breath",
+                "can't take a deep breath", "breathing is hard"),
                red_flag=True, points=5),
     SymptomDef("bleeding", "bleeding",
-               ("bleeding", "bleed", "bleeds", "oozing", "oozes"),
+               ("bleeding", "bleed", "bleeds", "oozing", "oozes", "blood",
+                "bloody", "bleeding a lot", "blood clot", "vomiting blood",
+                "blood in my vomit", "coughing up blood", "blood in my urine",
+                "blood in my stool", "nosebleed", "nose bleed"),
                red_flag=True, points=5),
     SymptomDef("neuro_deficit", "one-sided weakness / speech trouble",
-               ("slurred speech", "trouble speaking", "can't speak",
-                "face drooping", "facial droop", "one side of my body",
-                "numb on one side", "weakness on one side"),
+               ("slurred speech", "slurring my words", "trouble speaking",
+                "can't speak", "face drooping", "facial droop",
+                "face is drooping", "drooping", "one side of my body",
+                "numb on one side", "weakness on one side", "one sided weakness",
+                "one sided numbness", "numbness in my arm", "numbness in my leg",
+                "numbness in my hand", "numb in my arm", "numb in my hand",
+                "numb in my leg", "can't move my arm", "cannot move my arm",
+                "can't move my leg", "cannot move my leg", "can't move my hand",
+                "dragging my leg"),
+               red_flag=True, points=5),
+    SymptomDef("collapse", "fainting / blackout / seizure",
+               ("passed out", "passing out", "fainted", "fainting",
+                "blacked out", "lost consciousness", "unconscious",
+                "collapsed", "seizure", "seizures", "convulsion",
+                "convulsions"),
                red_flag=True, points=5),
     SymptomDef("wound_problem", "wound not clean / discharge",
                ("wound is not clean", "wound is not dry", "wound is dirty",
                 "wound is wet", "wound is open", "wound is red",
                 "wound is swollen", "wound is warm", "discharge from",
-                "pus", "oozing from the wound", "wound is leaking"),
+                "pus", "oozing from the wound", "wound is leaking",
+                "wound smells", "smelly discharge", "foul smell",
+                "smells foul",
+                # Diabetic foot care: the phrase patients actually use.
+                "foot sore", "sore on my foot", "sore on the foot",
+                "wound on my foot", "foot wound", "foot ulcer",
+                "ulcer on my foot", "sore is not healing",
+                "wound is not healing", "not healing", "not healed",
+                "foot is sore", "my foot is sore", "foot hurts",
+                "my foot hurts", "sore foot", "foot is swollen"),
                points=3),
     SymptomDef("vomiting", "vomiting / nausea",
                ("vomiting", "vomit", "vomited", "throwing up", "threw up",
@@ -197,11 +382,24 @@ _SYMPTOMS: tuple[SymptomDef, ...] = (
                points=3),
     SymptomDef("fever", "fever / chills",
                ("fever", "feverish", "running a temperature", "high temperature",
-                "chills", "shivering", "feeling hot and cold"),
+                "chills", "shivering", "feeling hot and cold", "burning up"),
+               points=3),
+    SymptomDef("confusion", "confusion / drowsiness",
+               ("confused", "confusion", "disoriented", "disorientated",
+                "not making sense", "talking nonsense", "drowsy",
+                "very sleepy", "hard to wake", "difficult to wake",
+                "not waking up"),
+               points=3),
+    SymptomDef("urine_problem", "urine / bowel problem",
+               ("not passing urine", "cannot pass urine", "can't pass urine",
+                "burning when i pee", "burning when i urinate",
+                "no bowel movement", "haven't opened my bowels",
+                "constipated", "constipation", "diarrhoea", "diarrhea"),
                points=3),
     SymptomDef("dizziness", "dizziness",
                ("dizzy", "dizziness", "lightheaded", "light headed", "faint",
-                "feeling faint", "woozy", "unsteady"),
+                "feeling faint", "woozy", "unsteady", "blurred vision",
+                "blurry vision"),
                points=2),
     SymptomDef("swelling", "swelling",
                ("swelling", "swollen", "puffy", "puffiness"),
@@ -210,11 +408,15 @@ _SYMPTOMS: tuple[SymptomDef, ...] = (
                ("headache", "head ache", "migraine"),
                points=1),
     SymptomDef("cough", "cough",
-               ("cough", "coughing", "coughed"),
+               ("cough", "coughing", "coughed",
+                # Respiratory discharge wording.
+                "wheeze", "wheezing", "phlegm", "sputum", "chesty"),
                points=1),
-    SymptomDef("fatigue", "weakness / fatigue",
+    SymptomDef("fatigue", "weakness / fatigue / poor appetite",
                ("weak", "weakness", "no energy", "fatigue", "fatigued",
-                "exhausted", "worn out"),
+                "exhausted", "worn out", "tired", "tiredness", "lethargic",
+                "no appetite", "poor appetite", "not eating",
+                "lost my appetite"),
                points=1),
     # Generic "pain" LAST so specific sites (chest, head...) consume first.
     SymptomDef("pain", "pain",
@@ -249,8 +451,15 @@ def extract_symptoms(text: str | None) -> tuple[SymptomFinding, ...]:
     Returns only NON-negated findings -- "no chest pain" produces nothing.
     Overlapping matches are resolved in favour of the more specific symptom
     that is matched first (red flags before generic "pain").
+
+    Two extra passes keep the result usable on real calls:
+    - benign phrases that merely contain a trigger ("blood pressure") are
+      masked out, so they can't raise a red flag;
+    - self-negated ability phrases ("I can't move my left arm") are matched by
+      _SELF_NEGATED_PATTERNS, because the negation window would cancel them.
     """
-    tokens = _tokens(text)
+    raw = text or ""
+    tokens = _mask_benign(_tokens(raw))
     if not tokens:
         return ()
 
@@ -291,6 +500,29 @@ def extract_symptoms(text: str | None) -> tuple[SymptomFinding, ...]:
         if finding is not None:
             findings.append(finding)
 
+    # Self-negated ability phrases ("I can't move my left arm"): regex layer,
+    # skipped when a trigger phrase already produced this symptom.
+    found_ids = {f.symptom_id for f in findings}
+    for pattern, symptom_id in _SELF_NEGATED_PATTERNS:
+        if symptom_id in found_ids:
+            continue
+        match = pattern.search(raw.lower())
+        if match is None:
+            continue
+        sdef = _SYMPTOM_BY_ID[symptom_id]
+        start = len(_tokens(raw[:match.start()]))
+        plen = max(1, len(_tokens(match.group(0))))
+        findings.append(SymptomFinding(
+            symptom_id=sdef.symptom_id,
+            label=sdef.label,
+            severity=_severity_near(tokens, start, start + plen),
+            matched_text=match.group(0),
+            red_flag=sdef.red_flag,
+            points=sdef.points,
+            source="text",
+        ))
+        found_ids.add(symptom_id)
+
     return tuple(findings)
 
 
@@ -301,6 +533,7 @@ def extract_symptoms(text: str | None) -> tuple[SymptomFinding, ...]:
 _MEDIUM_THRESHOLD = 2.0
 _HIGH_THRESHOLD = 5.0
 _MEDS_MISSED_SCORE = 2.0
+_UNGRADED_PAIN_SCORE = 2.0
 
 
 @dataclass(frozen=True)
@@ -328,6 +561,7 @@ class RiskAssessment:
 def assess_risk(
     findings: Sequence[SymptomFinding],
     medication_missed: bool = False,
+    ungraded_pain: bool = False,
 ) -> RiskAssessment:
     """Transparent additive risk score with red-flag overrides.
 
@@ -336,6 +570,8 @@ def assess_risk(
     - Each finding adds base points + severity bonus (mild +0, moderate +1,
       severe +2).
     - Missed medication adds +2 (adherence is a known post-discharge risk).
+    - Ungraded pain (patient said yes, but the severity could not be
+      established) adds +2 -- a failed grading must not read as "no problem".
     - score >= 5 -> HIGH; score >= 2 -> MEDIUM; else LOW.
     """
     reasons: list[str] = []
@@ -356,6 +592,13 @@ def assess_risk(
     if medication_missed:
         score += _MEDS_MISSED_SCORE
         reasons.append(f"medication not taken as prescribed (+{_MEDS_MISSED_SCORE:.0f})")
+
+    if ungraded_pain:
+        score += _UNGRADED_PAIN_SCORE
+        reasons.append(
+            "pain reported but severity not established "
+            f"(+{_UNGRADED_PAIN_SCORE:.0f})"
+        )
 
     if red_flag_labels:
         level = "high"
@@ -444,6 +687,16 @@ def assess_conversation(
         _add("cardiac_concern", "breathlessness or chest pain reported", None,
              red_flag=True, points=5, source="structured")
 
+    # Respiratory + diabetic discharge types (same shape as the general /
+    # surgical rules above: one structured finding worth 3 points).
+    if by_qid.get("category_respiratory", (None, ""))[0] is True:
+        _add("respiratory_concern", "new cough / wheezing / breathing trouble",
+             None, red_flag=False, points=3, source="structured")
+
+    if by_qid.get("category_diabetic", (None, ""))[0] is True:
+        _add("diabetic_concern", "dizziness / blurred vision / foot sore",
+             None, red_flag=False, points=3, source="structured")
+
     # -- free-text extraction over every transcript (negation-aware) ----------
 
     # Extract per transcript, never on a join: negation and severity windows
@@ -460,4 +713,19 @@ def assess_conversation(
                 # Free text found a worse severity than the structured answer.
                 findings_by_id[f.symptom_id] = replace(existing, severity=f.severity)
 
-    return assess_risk(tuple(findings_by_id.values()), medication_missed)
+    # Pain answered "yes" but never graded (unusable follow-up answer, hangup,
+    # unclear audio, or a wording the severity vocabulary still misses): the
+    # score must not read that as "nothing wrong". A live severe call scored
+    # LOW (1) exactly this way.
+    pain_finding = findings_by_id.get("pain")
+    ungraded_pain = (
+        by_qid.get("pain", (None, ""))[0] is True
+        and pain_finding is not None
+        and pain_finding.severity is None
+    )
+
+    return assess_risk(
+        tuple(findings_by_id.values()),
+        medication_missed,
+        ungraded_pain=ungraded_pain,
+    )

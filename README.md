@@ -25,7 +25,8 @@ architecture).
 4. Extracts symptoms and severity from that text.
 5. Scores risk as low / medium / high.
 6. Logs everything to the database.
-7. If risk is medium/high, alerts clinical staff (SMS/email + dashboard).
+7. If risk is high, prepares the alert message for the clinical team and puts
+   it on the dashboard (delivering it is a config switch -- SMS/email/WhatsApp).
 8. Staff review the case on the dashboard and call the patient back if needed.
 
 ---
@@ -110,7 +111,10 @@ illness":
   (yes/no + severity), general wellbeing / anything concerning.
 - **One category-specific question**, chosen by the patient's `diagnosis_category`
   in the database -- e.g. surgical discharge asks about the wound/incision,
-  cardiac discharge asks about breathlessness/chest pain.
+  cardiac discharge asks about breathlessness/chest pain. Five discharge
+  types are supported (`general`, `surgical`, `cardiac`, `respiratory`,
+  `diabetic`); the list lives in one place (`app/services/dialogue.py`
+  `CATEGORIES`) and the API validates against it.
 
 Questions are closed/structured (yes-no, short expected answers) rather than
 open-ended, so the NLP engine isn't fighting free-form rambling -- only the
@@ -200,6 +204,8 @@ real-time/voice complexity on this side, it's a standard CRUD-style dashboard.
 - Manual "call now" button (for demo purposes, alongside the automatic scheduler).
 - Transcript + extracted symptoms + the system's resulting decision per call
   (e.g. "continue monitoring" vs. "escalated to nurse").
+- Prepared alert text for a high-risk call, with a Copy button.
+- Patient register with create **and edit** (admin), and the manual "call now".
 - Alerts list, filterable by status (open/reviewed).
 - Simple JWT-based staff login (no patient-facing login needed).
 
@@ -267,6 +273,9 @@ Status is tracked here so it's always clear where we actually are.
 - [x] TC2: Negated phrasing ("no pain") is correctly not flagged as a symptom
 - [x] TC3: Sample transcripts covering low/medium/high risk each score correctly
 - [x] TC4: An empty or ambiguous transcript is handled without crashing
+- [x] Post-live hardening: severity wording ("very bad", "10/10"), ungraded pain
+      -> MEDIUM (never LOW), red-flag synonyms + "can't move my left arm",
+      benign "blood pressure"/"pain killers" no longer false-positive
 
 ### Step 5 -- Wire NLP + risk into the live call -- COMPLETE
 - [x] TC1: A real answer is transcribed and scored within a few seconds, without dead air
@@ -284,10 +293,13 @@ See backend/step-5-readme.md for details.
 
 See backend/step-6-7-readme.md.
 
-### Step 7 -- Alerts -- COMPLETE (WhatsApp via Zernio sandbox instead of SMS/email)
-- [x] TC1: A high-risk call triggers a WhatsApp alert within a reasonable time (right after the call)
-- [x] TC2: A low-risk call does not trigger an alert
-- [x] TC3: The alert includes patient code, risk level, and key symptoms (plus full answers/transcripts)
+### Step 7 -- Alerts -- COMPLETE (message PREPARED in-dashboard; WhatsApp opt-in)
+- [x] TC1: A high-risk call produces its alert text immediately after the call, stored on the call row and shown (with Copy) in the dashboard call detail
+- [x] TC2: A low/medium-risk call does not produce an alert at all (`alert_status = skipped`)
+- [x] TC3: The alert text includes patient code, risk level, and key symptoms (plus full answers/transcripts)
+- [x] Delivery channel is a config switch: `ALERT_DELIVERY=ready` (default, nothing leaves the backend) or `ALERT_DELIVERY=whatsapp` (the original Zernio sandbox POST, kept for when a real channel is agreed)
+
+**Full walkthrough of how severity/risk is calculated: `backend/severity-model.md`**
 
 See backend/step-6-7-readme.md. Live verification: backend/live-test-plan.md.
 
@@ -295,6 +307,8 @@ See backend/step-6-7-readme.md. Live verification: backend/live-test-plan.md.
 - [x] TC1: A patient due today is called automatically, with no manual trigger (proven with the dial mocked in tests/test_step8.py; live auto-dial only if you flip the switch)
 - [x] TC2: A patient not yet due is not called (plus: slots older than the grace window are never dialed)
 - [x] TC3: The next scheduled call time is correctly computed and shown (GET /schedule + the dashboard Schedule tab)
+- [x] Admin can turn the automatic dialer on/off from the Schedule tab (POST /schedule/enabled, persisted across restarts; arming never dials by itself)
+- [x] The tick never re-dials a patient called in the last 24h (`SCHEDULE_MIN_HOURS_BETWEEN_CALLS`; manual **and** automatic dials start the window, manual Call Now is never blocked)
 
 See backend/step-8-readme.md.
 
@@ -303,8 +317,9 @@ See backend/step-8-readme.md.
 - [x] TC2: Call list displays with correct risk-level color coding (red/amber/green badges + filter chips)
 - [ ] TC3: The manual "call now" button places a real call -- UI + confirm dialog built; ticks when you run live-test-plan.md section 7 (it replaces Call B's curl trigger, no extra call)
 - [x] TC4: Layout is usable and responsive at mobile width (sidebar collapses to a drawer under 1024px)
+- [x] "Forgot password" resets a password self-service (employee ID + new password + confirm; backend tests/test_step9.py, no admin/third-party calls)
 
-See backend/step-9-readme.md. Verify: 169 backend tests + `cd frontend && npm run build`.
+See backend/step-9-readme.md. Verify: 175 backend tests + `cd frontend && npm run build`.
 
 ### Step 10 -- Multilingual (Tamil, then Sinhala) -- Not started
 - [ ] TC1: Patient can select a language at the start of the call
@@ -320,4 +335,57 @@ See backend/step-9-readme.md. Verify: 169 backend tests + `cd frontend && npm ru
 - [ ] Real-time turn-detection (knowing when the patient stopped talking, mid-call)
 - [ ] Final risk-scoring rules, once clinician input is available
 - [ ] Docker Compose setup (after core pipeline works)
+
+---
+
+## 15. Run locally
+
+Open three terminals from the project root.
+
+### 1. Start the backend
+
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m uvicorn app.main:app --port 8000
+```
+
+Keep this terminal running.
+
+### 2. Start ngrok
+
+Open a new terminal, then run ngrok from the folder where `ngrok.exe` is installed or just double click on ngrok.exe. then type the following on the ngrok terminal to expose the backend to the internet for Zernio to reach it:
+
+```powershell
+ngrok http 8000
+```
+
+Copy the HTTPS forwarding URL shown by ngrok. For example:
+
+```text
+https://example-name.ngrok-free.app
+```
+
+In `backend/.env`, set `PUBLIC_WSS_URL` to the same URL using `wss://` and append
+`/media-stream`:
+
+```dotenv
+PUBLIC_WSS_URL=wss://example-name.ngrok-free.app/media-stream
+```
+
+Restart the backend after changing `.env`.
+
+### 3. Start the frontend
+
+Open a new terminal from the project root:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open the local URL printed by Vite, usually `http://localhost:5173`.
 

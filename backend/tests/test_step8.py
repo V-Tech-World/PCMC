@@ -79,6 +79,8 @@ def _fake_place_call(monkeypatch) -> list[dict]:
             provider_call_id="ca_sched_test",
             to_number=to_number,
             provider_status="dialing",
+            forward_to_host="wss://example.invalid/media-stream",
+            greeting="",
         )
 
     monkeypatch.setattr("app.services.outbound_call.place_call", fake)
@@ -308,6 +310,7 @@ def test_schedule_api_reports_the_plan_without_dialing():
     assert board["due_count"] == 1
     assert board["patients"][0]["next_call_at"]  # TC3: shown to the dashboard
     assert board["patients"][0]["will_dial_automatically"] is False
+    assert board["patients"][0]["cooldown_hours"] == 0.0
 
     due = client.get("/schedule/due", headers=key).json()
     assert due["count"] == 1
@@ -349,3 +352,149 @@ def test_health_reports_automatic_calls_state():
     assert data["automatic_calls_enabled"] is False
     assert data["scheduler_running"] is False
     assert data["auth_configured"] is True
+
+
+# ------------------------------------------------------- runtime master switch
+
+def test_switch_can_be_flipped_from_the_dashboard_api(monkeypatch):
+    """POST /schedule/enabled arms/disarms the cron from the UI.
+
+    Three properties matter: admin-only, persisted (survives restart), and
+    ARMING NEVER DIALS BY ITSELF -- a due patient exists the whole time and
+    the provider recorder stays empty (dial mocked, nothing is placed).
+    """
+    calls = _fake_place_call(monkeypatch)
+    _due_patient_relative_to_today()          # someone IS due right now
+    client = _client()
+    key = {"X-Api-Key": "test-calls-key"}
+
+    # auth: anonymous -> 401, nurse/doctor -> 403, admin -> 200
+    assert client.post("/schedule/enabled", json={"enabled": True}).status_code == 401
+    nurse = _headers_for("nur8t", "nurse-pass-8t", "nurse")
+    assert client.post(
+        "/schedule/enabled", json={"enabled": True}, headers=nurse
+    ).status_code == 403
+
+    admin = _headers_for("adm8t", "admin-pass-8t", "admin")
+    on = client.post("/schedule/enabled", json={"enabled": True}, headers=admin)
+    assert on.status_code == 200, on.text
+    body = on.json()
+    assert body["enabled"] is True and body["running"] is True
+    assert body["next_tick_at"] is not None
+    assert "ON" in body["note"]
+    assert calls == []                        # arming placed NO call
+    assert db_service.get_setting("schedule_calls_enabled") == "true"
+
+    # every reader agrees now
+    status = client.get("/schedule/status", headers=key).json()
+    assert status["enabled"] is True and status["running"] is True
+    board = client.get("/schedule", headers=key).json()
+    assert board["scheduler"]["enabled"] is True
+    assert board["patients"][0]["will_dial_automatically"] is True
+
+    # an EXPLICIT tick now really dials (provider mocked)
+    tick = client.post("/schedule/run-now", json={}, headers=admin)
+    assert tick.json()["dialed"] == 1
+    assert len(calls) == 1
+
+    # turn it off again: cron stops, choice saved, tick goes plan-only
+    off = client.post("/schedule/enabled", json={"enabled": False}, headers=admin)
+    assert off.status_code == 200
+    assert off.json()["enabled"] is False and off.json()["running"] is False
+    assert db_service.get_setting("schedule_calls_enabled") == "false"
+    assert scheduler.status()["running"] is False
+    tick2 = client.post("/schedule/run-now", json={}, headers=admin)
+    assert tick2.json()["enabled"] is False
+    assert tick2.json()["dialed"] == 0
+    assert len(calls) == 1
+
+
+# ------------------------------------------------------- 24h per-patient cooldown
+
+def test_cooldown_skips_a_patient_dialed_in_the_last_24h(monkeypatch):
+    """Patient A was called at 2 PM: an automatic tick the same afternoon must
+    skip them (planned, "cooldown" outcome, provider untouched) but still list
+    them -- and the manual Call Now button is never gated by the window."""
+    from datetime import datetime
+
+    settings = _settings(schedule_calls_enabled=True)
+    now = datetime(2026, 6, 4, 14, 0)           # "today at 2 PM"
+    patient = _patient(discharge="2026-06-01")  # 3-day slot due today 09:00
+    calls = _fake_place_call(monkeypatch)
+
+    # First tick dials once and stamps the 24h window start.
+    first = scheduler.run_tick(now=now, settings=settings)
+    assert first.dialed == 1
+    assert len(calls) == 1
+    assert first.planned[0]["cooldown_hours"] == 0.0
+
+    # Same afternoon: still planned, but skipped by the cooldown rail.
+    second = scheduler.run_tick(now=now + timedelta(hours=4), settings=settings)
+    assert second.dialed == 0
+    assert len(calls) == 1                        # provider was NOT called
+    assert len(second.planned) == 1               # still listed, honestly
+    assert second.planned[0]["cooldown_hours"] == 20.0
+    assert second.outcomes[0]["status"] == "cooldown"
+    assert second.outcomes[0]["patient_code"] == patient.patient_code
+
+    # The board says the same thing in the same words.
+    rows = scheduler.plan_due(now=now + timedelta(hours=4), settings=settings)
+    assert [r.patient_code for r in rows] == [patient.patient_code]
+    assert rows[0].cooldown_hours == 20.0
+
+    # Full window elapsed: dialling resumes on its own (2 PM the next day).
+    third = scheduler.run_tick(now=now + timedelta(hours=24), settings=settings)
+    assert third.dialed == 1
+    assert len(calls) == 2
+
+
+def test_manual_call_now_starts_the_cooldown_but_is_never_gated(monkeypatch):
+    """A manual Call Now dial is never blocked, yet starts the same 24h window
+    for the automatic tick -- the single knob the user asked for."""
+    client = _client()
+    calls = _fake_place_call(monkeypatch)
+    db_service.upsert_patient(
+        patient_code="P-820", name="Manual Coolan", phone_number="+94771000820",
+        diagnosis_category="cardiac",
+        discharge_date=(date.today() - timedelta(days=4)).isoformat(),
+    )
+    nurse = _headers_for("nur8c", "nurse-pass-8c", "nurse")
+
+    manual = client.post(
+        "/calls",
+        json={"patient_code": "P-820", "diagnosis_category": "cardiac"},
+        headers=nurse,
+    )
+    assert manual.status_code == 201, manual.text
+    assert len(calls) == 1                       # manual dial is never gated
+
+    # The very same minute: an automatic tick skips this patient (cooldown).
+    admin = _headers_for("adm8c", "admin-pass-8c", "admin")
+    assert client.post(
+        "/schedule/enabled", json={"enabled": True}, headers=admin
+    ).status_code == 200
+    tick = client.post("/schedule/run-now", json={}, headers=admin).json()
+    assert tick["dialed"] == 0
+    assert len(calls) == 1                       # still exactly one dial
+    assert [p["patient_code"] for p in tick["planned"]] == ["P-820"]
+    assert [o["status"] for o in tick["outcomes"]] == ["cooldown"]
+
+
+def test_saved_switch_wins_over_env_after_a_restart():
+    """.env is only the fresh-DB default; a dashboard toggle survives restarts."""
+    # nothing saved yet -> the .env/default value stands
+    settings = _settings(schedule_calls_enabled=False)
+    assert scheduler.apply_saved_switch(settings) is False
+    assert settings.schedule_calls_enabled is False
+
+    # admin flipped it ON in the UI -> a restart keeps it ON
+    db_service.set_setting("schedule_calls_enabled", "true")
+    settings = _settings(schedule_calls_enabled=False)   # .env says false
+    assert scheduler.apply_saved_switch(settings) is True
+    assert settings.schedule_calls_enabled is True
+
+    # ...and OFF stays OFF even if .env would say true
+    db_service.set_setting("schedule_calls_enabled", "false")
+    settings = _settings(schedule_calls_enabled=True)
+    assert scheduler.apply_saved_switch(settings) is False
+    assert settings.schedule_calls_enabled is False

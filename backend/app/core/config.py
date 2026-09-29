@@ -109,12 +109,21 @@ class Settings(BaseSettings):
     # SQLAlchemy URL. Empty = the default SQLite file backend/voicecare.db.
     database_url: str = ""
 
-    # -- WhatsApp alerts via the Zernio sandbox (Step 7) -------------------------
-    # High-risk calls are pushed to the care team's WhatsApp through the
-    # Zernio inbox. These are the SANDBOX conversation credentials and are
-    # deliberately separate from FROM_NUMBER (the real toll-free voice line):
-    # voice keeps dialing from the toll-free number, alerts ride the sandbox.
+    # -- Alerts (Step 7, reworked) ----------------------------------------------
+    # A HIGH-risk call ALWAYS gets its alert text built and stored on the call
+    # row; ALERT_DELIVERY decides whether that text is also pushed anywhere:
+    #   ready    (default for this demo): prepare + store only. The dashboard
+    #            shows the message on the call detail (with a Copy button) so
+    #            the on-call nurse can paste it into whatever channel the
+    #            hospital actually uses. Nothing leaves the backend.
+    #   whatsapp: additionally POST it to the Zernio sandbox conversation below
+    #            (the original Step 7 behaviour, kept for when a delivery
+    #            channel is agreed -- e.g. the real hospital WhatsApp number).
     alerts_enabled: bool = True
+    alert_delivery: str = "ready"          # ready | whatsapp
+    # Sandbox WhatsApp credentials (only used when ALERT_DELIVERY=whatsapp).
+    # Deliberately separate from FROM_NUMBER (the real toll-free voice line):
+    # voice keeps dialing from the toll-free number, alerts ride the sandbox.
     inbox_account_id: str = ""             # Zernio sandbox account id
     alert_conversation_id: str = ""        # id of the sandbox WhatsApp thread
 
@@ -135,6 +144,7 @@ class Settings(BaseSettings):
     schedule_interval_minutes: int = 30       # how often the tick looks for due patients
     schedule_grace_days: int = 2              # catch-up window for an overdue slot
     schedule_max_dials_per_tick: int = 2      # hard cap per tick (cost rail)
+    schedule_min_hours_between_calls: float = 24.0  # per-patient auto-dial cooldown: a patient dialed less than this many hours ago is skipped by the tick (manual + auto dials both start the window; manual calls are never blocked by it)
     schedule_dry_run: bool = False            # true = log the dial plan, dial nothing
 
     # -- Staff auth (Step 9, JWT) -------------------------------------------------

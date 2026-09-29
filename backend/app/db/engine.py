@@ -16,7 +16,7 @@ from pathlib import Path
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.core.config import BACKEND_DIR, get_settings
-from app.db.models import CallRecord, Patient  # noqa: F401 (imported for metadata)
+from app.db.models import AppSetting, CallRecord, Patient  # noqa: F401 (imported for metadata)
 
 logger = logging.getLogger("voicecare.db")
 

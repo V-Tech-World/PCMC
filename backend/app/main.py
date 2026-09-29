@@ -106,8 +106,12 @@ async def lifespan(app: FastAPI):
     else:
         log.info("  Dashboard logins already present.")
 
-    # Step 8: the follow-up cron. Dormant unless SCHEDULE_CALLS_ENABLED=true --
-    # this is the only place the app can dial without a human pressing a button.
+    # Step 8: the follow-up cron. The master switch defaults to
+    # SCHEDULE_CALLS_ENABLED in .env, but an admin can flip it from the
+    # dashboard (POST /schedule/enabled) -- that choice is persisted in the DB
+    # and re-applied here. This is the only place the app can dial without a
+    # human pressing a button.
+    scheduler.apply_saved_switch(settings)
     scheduler.start(settings)
     yield
     scheduler.stop()

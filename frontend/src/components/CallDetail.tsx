@@ -1,4 +1,5 @@
 /** Expanded call detail: transcript answers, findings, risk + actions. */
+import { useState } from "react";
 import type { CallRow } from "../lib/types";
 import { RiskBadge, fmtDateTime } from "./ui";
 
@@ -26,6 +27,30 @@ export default function CallDetail({
   const answers = row.answers ?? [];
   const findings = row.findings ?? [];
   const reasons = row.risk_reasons ?? [];
+  const [copied, setCopied] = useState(false);
+
+  // Step 7: the alert text is prepared for every HIGH-risk call and kept on the
+  // row, so the nurse can hand it to the ward over whatever channel they use.
+  async function copyAlert() {
+    if (!row.alert_message) return;
+    try {
+      await navigator.clipboard.writeText(row.alert_message);
+    } catch {
+      // Clipboard blocked (insecure context / denied): select it instead so
+      // Ctrl+C still works.
+      const box = document.getElementById("alert-message-box");
+      if (box) {
+        const range = document.createRange();
+        range.selectNodeContents(box);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      }
+      return;
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 2000);
+  }
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -40,9 +65,11 @@ export default function CallDetail({
         </div>
 
         {reasons.length > 0 && (
-          <div className="rounded-lg bg-red-50 px-3 py-2 text-sm">
-            <b className="text-red-800">Why this risk level:</b>
-            <ul className="mt-1 list-inside list-disc text-red-700">
+          <div className="rounded-lg bg-red-50 px-3 py-2 text-sm dark:bg-red-950/40">
+            <b className="text-red-800 dark:text-red-200">
+              Why this risk level:
+            </b>
+            <ul className="mt-1 list-inside list-disc text-red-700 dark:text-red-300">
               {reasons.map((r) => (
                 <li key={r}>{r}</li>
               ))}
@@ -51,14 +78,16 @@ export default function CallDetail({
         )}
 
         {findings.length > 0 && (
-          <div className="rounded-lg bg-amber-50 px-3 py-2 text-sm">
-            <b className="text-amber-800">Symptoms found:</b>
-            <ul className="mt-1 list-inside list-disc text-amber-700">
+          <div className="rounded-lg bg-amber-50 px-3 py-2 text-sm dark:bg-amber-950/40">
+            <b className="text-amber-800 dark:text-amber-200">Symptoms found:</b>
+            <ul className="mt-1 list-inside list-disc text-amber-700 dark:text-amber-300">
               {findings.map((f) => (
                 <li key={f.id}>
-                  {f.label} — {f.severity}
+                  {f.label} — {f.severity || "ungraded"}
                   {f.red_flag ? " (red flag)" : ""}{" "}
-                  <span className="text-amber-500">“{f.matched_text}”</span>
+                  <span className="text-amber-600 dark:text-amber-400">
+                    “{f.matched_text}”
+                  </span>
                 </li>
               ))}
             </ul>
@@ -95,12 +124,37 @@ export default function CallDetail({
 
       {/* Workflow actions */}
       <div className="space-y-3">
-        <div className="rounded-lg bg-white px-3 py-2 text-sm ring-1 ring-neutral-200 dark:ring-neutral-700 dark:bg-white/5">
-          <b>Alert:</b> {row.alert_status.replace("_", " ")}
+        <div className="rounded-lg bg-white px-3 py-2 text-sm ring-1 ring-neutral-200 dark:bg-white/5 dark:ring-neutral-700">
+          <b>Alert:</b> {row.alert_status.replace(/_/g, " ")}
           {row.alert_detail && (
-            <span className="block text-xs text-neutral-400 dark:text-neutral-500">{row.alert_detail}</span>
+            <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+              {row.alert_detail}
+            </span>
           )}
         </div>
+
+        {row.alert_message && (
+          <div className="rounded-lg bg-amber-50 px-3 py-2 text-sm ring-1 ring-amber-200 dark:bg-amber-950/40 dark:ring-amber-800">
+            <div className="flex items-center justify-between gap-2">
+              <b className="text-amber-800 dark:text-amber-200">
+                Alert message (ready to send)
+              </b>
+              <button
+                type="button"
+                onClick={() => void copyAlert()}
+                className="shrink-0 cursor-pointer rounded-lg bg-white px-2 py-1 text-xs font-bold text-amber-800 ring-1 ring-amber-300 transition-all hover:bg-amber-100 active:scale-95 dark:bg-white/10 dark:text-amber-200 dark:ring-amber-700"
+              >
+                {copied ? "Copied ✓" : "Copy"}
+              </button>
+            </div>
+            <pre
+              id="alert-message-box"
+              className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white/70 p-2 font-sans text-xs text-neutral-800 dark:bg-black/30 dark:text-neutral-200"
+            >
+              {row.alert_message}
+            </pre>
+          </div>
+        )}
 
         <label className="block text-xs font-bold uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
           Case note

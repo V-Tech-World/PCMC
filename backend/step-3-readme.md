@@ -20,8 +20,12 @@ backend/
 ## What a call does now
 
 1. `POST /calls` takes an optional `diagnosis_category`
-   (`general` | `surgical` | `cardiac`, default general). The category rides
-   on the call's one-time stream token.
+   (`general` | `surgical` | `cardiac` | `respiratory` | `diabetic`,
+   default general). The category rides on the call's one-time stream token.
+   `dialogue.CATEGORIES` is the single source of truth: the question wording,
+   the `POST /calls` validation and the `POST /records/patients` validation all
+   read the same dict, so adding a discharge type is one entry here plus the
+   matching `category_<type>` rule in `nlp.assess_conversation`.
 2. Zernio answers -> plays the greeting (privacy line) -> streams audio to us.
 3. The call-flow driver **speaks the first question** (offline TTS) and
    waits. **Only one question is asked at a time** (Step 3 TC1).

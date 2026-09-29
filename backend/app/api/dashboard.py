@@ -18,6 +18,7 @@ from app.core import rate_limiter
 from app.core.config import get_settings
 from app.core.security import AuthContext, require_auth
 from app.db import service as db_service
+from app.services import alerts as alerts_service
 from app.services import scheduler
 
 logger = logging.getLogger("voicecare.dashboard")
@@ -82,6 +83,7 @@ def summary(context: AuthContext = Depends(require_auth)) -> dict:
             "calls_by_risk": stats["calls_by_risk"],
             "calls_reviewed": stats["calls_reviewed"],
             "alerts_sent": stats["alerts_sent"],
+            "alerts_ready": stats["alerts_ready"],
             "alerts_open": len(open_alerts),
             "patients_total": stats["patients_total"],
             "patients_active": stats["patients_active"],
@@ -105,7 +107,13 @@ def summary(context: AuthContext = Depends(require_auth)) -> dict:
         "scheduler": scheduler.status(settings),
         "alerts": {
             "enabled": bool(settings.alerts_enabled),
-            "channel": "whatsapp (Zernio inbox)",
+            "delivery": alerts_service.delivery_mode(settings),
+            "channel": (
+                "prepared in-dashboard (manual delivery)"
+                if alerts_service.delivery_mode(settings)
+                == alerts_service.DELIVERY_READY
+                else "whatsapp (Zernio inbox)"
+            ),
             "conversation_configured": bool(settings.alert_conversation_id),
         },
         "cost_rails": {

@@ -22,6 +22,44 @@ import {
 
 type Filter = "all" | RiskLevel | "open";
 
+/** Step 7 states, as small dark-mode-safe chips. */
+const ALERT_CHIP: { match: (s: string) => boolean; label: string; style: string }[] = [
+  {
+    match: (s) => s.startsWith("sent"),
+    label: "Sent",
+    style: "bg-emerald-100 text-emerald-700 ring-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:ring-emerald-800",
+  },
+  {
+    match: (s) => s === "ready",
+    label: "Ready to send",
+    style: "bg-amber-100 text-amber-800 ring-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-800",
+  },
+  {
+    match: (s) => s.startsWith("failed") || s === "not_configured",
+    label: "Not sent",
+    style: "bg-red-100 text-red-700 ring-red-200 dark:bg-red-950 dark:text-red-300 dark:ring-red-800",
+  },
+];
+
+function AlertChip({ status }: { status: string }) {
+  const hit = ALERT_CHIP.find((c) => c.match(status));
+  if (hit) {
+    return (
+      <span
+        className={`inline-block rounded-full px-2 py-0.5 text-xs font-bold ring-1 ${hit.style}`}
+      >
+        {hit.label}
+      </span>
+    );
+  }
+  // skipped / not_sent: nothing to deliver, deliberately quiet.
+  return (
+    <span className="text-xs text-neutral-500 dark:text-neutral-400">
+      {status.replace(/_/g, " ")}
+    </span>
+  );
+}
+
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "open", label: "Open alerts" },
@@ -173,8 +211,11 @@ export default function CallsPage() {
                   <Fragment key={row.id}>
                     <tr
                       onClick={() => toggle(row)}
-                      className={`cursor-pointer border-b border-neutral-100 dark:border-neutral-700/60 hover:bg-brand-50 dark:hover:bg-white/5/60 dark:hover:bg-white/5 ${
-                        expanded === row.id ? "bg-brand-50" : ""
+                      className={`cursor-pointer border-b border-neutral-100 dark:border-neutral-700/60 hover:bg-brand-50 dark:hover:bg-white/5 ${
+                        // Expanded row: light tint in light mode, a subtle
+                        // brand tint in dark mode (a plain bg-brand-50 here
+                        // made the open row jump back to light mode).
+                        expanded === row.id ? "bg-brand-50 dark:bg-brand-900/30" : ""
                       }`}
                     >
                       <td className="whitespace-nowrap px-2 py-2">
@@ -203,8 +244,8 @@ export default function CallsPage() {
                       <td className="whitespace-nowrap px-2 py-2">
                         {fmtDuration(row.duration_sec)}
                       </td>
-                      <td className="px-2 py-2 text-xs capitalize">
-                        {row.alert_status.replace("_", " ")}
+                      <td className="px-2 py-2 text-xs">
+                        <AlertChip status={row.alert_status} />
                       </td>
                       <td className="px-2 py-2 text-xs">
                         {row.closed_by

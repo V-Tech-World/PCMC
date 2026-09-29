@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from sqlmodel import select
 
 from app.db.engine import init_db, new_session
-from app.db.models import CallRecord, Patient, StaffUser
+from app.db.models import AppSetting, CallRecord, Patient, StaffUser
 
 logger = logging.getLogger("voicecare.db")
 
@@ -107,15 +107,20 @@ def attach_alert(
     record_id: int,
     status: str,
     detail: str = "",
+    message: str | None = None,
     database_url: str | None = None,
 ) -> None:
-    """Update alert_status / alert_detail after the Step 7 send attempt."""
+    """Update alert_status / alert_detail / alert_message after the Step 7
+    prepare-or-send step. `message` is None when the caller has nothing new to
+    store (e.g. a skipped low-risk call)."""
     try:
         with new_session(database_url) as session:
             record = session.get(CallRecord, record_id)
             if record:
                 record.alert_status = status
                 record.alert_detail = detail[:500]
+                if message is not None:
+                    record.alert_message = message
                 session.add(record)
                 session.commit()
     except Exception:
@@ -213,11 +218,16 @@ def stats(database_url: str | None = None) -> dict:
             _ = row.get_answers()
     by_risk = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
     alerts_sent = 0
+    alerts_ready = 0
     reviewed = 0
     for row in calls:
         by_risk[row.risk_level if row.risk_level in by_risk else "unknown"] += 1
-        if row.alert_status == "sent":
+        # Step 7 rework: a HIGH-risk call is 'ready' (message prepared, not
+        # sent) unless ALERT_DELIVERY=whatsapp delivered it ('sent (<id>)').
+        if row.alert_status.startswith("sent"):
             alerts_sent += 1
+        elif row.alert_status == "ready":
+            alerts_ready += 1
         if row.reviewed:
             reviewed += 1
     last_call_at = max((row.started_at for row in calls if row.started_at), default=None)
@@ -225,6 +235,7 @@ def stats(database_url: str | None = None) -> dict:
         "calls_total": len(calls),
         "calls_by_risk": by_risk,
         "alerts_sent": alerts_sent,
+        "alerts_ready": alerts_ready,
         "alerts_open": max(0, by_risk["high"] - reviewed),
         "calls_reviewed": reviewed,
         "patients_total": len(patients),
@@ -414,3 +425,54 @@ def ensure_default_admin(
         database_url=database_url,
     )
     return "created"
+
+
+# ---------------------------------------------------------------------------
+# App settings (key/value runtime flags -- Step 8 switch from the dashboard)
+# ---------------------------------------------------------------------------
+
+def get_setting(key: str, database_url: str | None = None) -> str | None:
+    """Read one saved runtime flag, or None when it has never been set."""
+    init_db(database_url)
+    with new_session(database_url) as session:
+        row = session.get(AppSetting, key)
+        return row.value if row is not None else None
+
+
+def set_setting(key: str, value: str, database_url: str | None = None) -> None:
+    """Upsert one runtime flag (idempotent)."""
+    init_db(database_url)
+    with new_session(database_url) as session:
+        row = session.get(AppSetting, key)
+        if row is None:
+            row = AppSetting(key=key, value=value)
+        else:
+            row.value = value
+        session.add(row)
+        session.commit()
+
+
+def update_staff_password(
+    username: str, password: str, database_url: str | None = None
+) -> bool:
+    """Set a new password for an existing staff account (self-service reset).
+
+    Returns False when no row matches -- the caller turns that into the same
+    generic error as an unknown employee ID.
+    """
+    from app.core.security import hash_password
+
+    init_db(database_url)
+    password_hash, password_salt = hash_password(password)
+    with new_session(database_url) as session:
+        user = session.exec(
+            select(StaffUser).where(StaffUser.username == username.strip().lower())
+        ).first()
+        if user is None:
+            return False
+        user.password_hash = password_hash
+        user.password_salt = password_salt
+        session.add(user)
+        session.commit()
+        logger.info("Password reset for staff: %s", user.username)
+        return True

@@ -9,7 +9,9 @@ The hospital has one dashboard and three roles (README section 9):
 
 There is no patient login and no signup endpoint: the first admin comes from
 `ADMIN_USERNAME`/`ADMIN_PASSWORD` in .env (seeded on startup). Additional
-accounts are created by an admin via POST /auth/staff.
+accounts are created by an admin via POST /auth/staff. Staff who forgot their
+password reset it themselves via POST /auth/reset-password (employee ID + new
+password + confirm -- no admin approval, no third party, by demo design).
 """
 
 from __future__ import annotations
@@ -47,6 +49,20 @@ class StaffCreate(BaseModel):
     role: str = "nurse"
     display_name: str = ""
     hospital: str = ""
+
+
+class ResetPasswordRequest(BaseModel):
+    """Self-service reset: employee ID + the new password twice.
+
+    Deliberately NO admin approval and NO third-party call (no mail/SMS
+    provider): the demo runs on a hospital intranet and the login screen says
+    so plainly. Unknown and deactivated accounts get the same generic 404, so
+    the form cannot be used to probe which employee IDs exist.
+    """
+
+    username: str = Field(min_length=1, max_length=64)
+    new_password: str = Field(min_length=6, max_length=256)
+    confirm_password: str = Field(min_length=1, max_length=256)
 
 
 def _staff_to_dict(user) -> dict:
@@ -96,6 +112,34 @@ def login(body: LoginRequest) -> dict:
         "token_type": "bearer",
         "expires_in": expires_in,
         "user": _staff_to_dict(user),
+    }
+
+
+@router.post("/reset-password")
+def reset_password(body: ResetPasswordRequest) -> dict:
+    """Forgot-password flow: type the employee ID, set a new password.
+
+    Self-service on purpose -- no admin approval and no third-party email/SMS
+    service (demo scope, README section 9). The caller is by definition logged
+    out, so this endpoint takes no auth; unknown and deactivated accounts are
+    answered with one generic 404 (never reveals which IDs exist).
+    """
+    if body.new_password != body.confirm_password:
+        raise HTTPException(
+            status_code=422, detail="New password and confirmation do not match."
+        )
+    user = db_service.get_staff_by_username(body.username.strip())
+    if user is None or not user.active:
+        logger.warning("Password reset attempted for unknown/inactive %r", body.username)
+        raise HTTPException(
+            status_code=404, detail="No account found with that employee ID."
+        )
+    db_service.update_staff_password(user.username, body.new_password)
+    logger.info("Password self-reset for %s", user.username)
+    return {
+        "status": "password_updated",
+        "username": user.username,
+        "message": "Password updated -- sign in with your new password.",
     }
 
 
