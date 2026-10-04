@@ -155,13 +155,50 @@ export default function CallDetail({
       {/* Workflow actions */}
       <div className="space-y-3">
         <div className="rounded-lg bg-white px-3 py-2 text-sm ring-1 ring-neutral-200 dark:bg-white/5 dark:ring-neutral-700">
-          <b>Alert:</b> {row.alert_status.replace(/_/g, " ")}
-          {row.alert_detail && (
+          <b>Alert:</b> {row.alert_status.split(" (")[0].replace(/_/g, " ")}
+          {/* The WhatsApp provider id lives in the backend log;
+              show alert_detail only when it explains a failure. */}
+          {row.alert_detail && !row.alert_detail.startsWith("provider message id") && (
             <span className="block text-xs text-neutral-500 dark:text-neutral-400">
               {row.alert_detail}
             </span>
           )}
-        </div>
+        {/* 4 Oct 2026: who this call's alert actually reached (email, routed by
+            score: below threshold nurses only, at/above nurses + doctors).
+            The no_route placeholder means nobody could be reached -- show it in
+            red, not silence: WhatsApp may say "sent" while email reached zero. */}
+        {(row.alert_recipients ?? []).length > 0 && (
+            <ul className="mt-1 space-y-1">
+              {(row.alert_recipients ?? []).map((r, i) => (
+                <li key={r.username || `note-${i}`} className="flex items-start justify-between gap-2 text-xs">
+                  <span>
+                    <span className="font-semibold">{r.display_name || r.username || "No routable staff"}</span>
+                    {r.username && (
+                      <span className="text-neutral-500 dark:text-neutral-400">
+                        {" "}({r.role} · {r.email || "no email"})
+                      </span>
+                    )}
+                    {r.status.startsWith("no_route") && (
+                      <span className="block text-red-600 dark:text-red-400">
+                        No active nurse/doctor account has a valid email — add one on the Staff screen.
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    className={
+                      r.status === "sent"
+                        ? "shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 font-bold text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200"
+                        : "shrink-0 rounded-full bg-red-100 px-2 py-0.5 font-bold text-red-700 dark:bg-red-950/60 dark:text-red-300"
+                    }
+                    title={r.status}
+                  >
+                    {r.status === "sent" ? "sent ✓" : r.status.split(":")[0]}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          </div>
 
         {row.alert_message && (
           <div className="rounded-lg bg-amber-50 px-3 py-2 text-sm ring-1 ring-amber-200 dark:bg-amber-950/40 dark:ring-amber-800">

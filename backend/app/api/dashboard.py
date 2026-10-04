@@ -20,6 +20,7 @@ from app.core.security import AuthContext, require_auth
 from app.db.models import iso_utc
 from app.db import service as db_service
 from app.services import alerts as alerts_service
+from app.services import email_alerts as email_alerts_service
 from app.services import scheduler
 
 logger = logging.getLogger("voicecare.dashboard")
@@ -43,6 +44,7 @@ def _recent_call_row(record) -> dict:
         "risk_reasons": record.get_risk_reasons(),
         "symptom_count": len(record.get_findings()),
         "alert_status": record.alert_status,
+        "alert_recipients": record.get_alert_recipients(),
         "reviewed": record.reviewed,
         "closed_by": record.closed_by,
     }
@@ -116,6 +118,12 @@ def summary(context: AuthContext = Depends(require_auth)) -> dict:
                 else "whatsapp (Zernio inbox)"
             ),
             "conversation_configured": bool(settings.alert_conversation_id),
+            # 4 Oct 2026: the second channel -- named staff by email, routed on
+            # risk score. Surfaced here so the UI can show when it is off.
+            "email_enabled": bool(settings.email_alerts_enabled),
+            "email_configured": email_alerts_service.email_alerts_configured(settings),
+            "email_sender": settings.sender_email or "",
+            "doctor_score_threshold": settings.alert_doctor_score_threshold,
         },
         "cost_rails": {
             "max_call_duration_sec": settings.max_call_duration_sec,

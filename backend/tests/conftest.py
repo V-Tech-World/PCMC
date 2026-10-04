@@ -43,6 +43,12 @@ def clean_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("ALERT_DELIVERY", "ready")
     monkeypatch.setenv("ZERNIO_INBOX_ACCOUNT_ID", "")
     monkeypatch.setenv("ZERNIO_ALERT_CONVERSATION_ID", "")
+    # 4 Oct 2026 staff email alerts. EMAIL_ALERTS_ENABLED defaults to true in
+    # Settings and backend/.env may hold REAL credentials, so the suite pins all
+    # of it: no test may ever open an SMTP connection to a live mailbox.
+    monkeypatch.setenv("EMAIL_ALERTS_ENABLED", "false")
+    monkeypatch.setenv("SENDER_EMAIL", "")
+    monkeypatch.setenv("GOOGLE_APP_PASSWORD", "")
     get_settings.cache_clear()
     media_auth.reset()
     yield

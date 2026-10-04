@@ -41,6 +41,7 @@ from app.db import service as db_service
 from app.db.engine import init_db
 from app.services import scheduler
 from app.services import alerts as alerts_service
+from app.services import email_alerts as email_alerts_service
 from app.api.health import verify_stt_pipeline
 
 
@@ -120,6 +121,7 @@ async def lifespan(app: FastAPI):
         password=settings.admin_password,
         display_name=settings.admin_display_name,
         hospital=settings.default_hospital,
+        email=settings.admin_email,
     )
     if seeded == "created":
         log.info("  Dashboard login seeded: %s (role=admin)", settings.admin_username)
@@ -130,6 +132,32 @@ async def lifespan(app: FastAPI):
         )
     else:
         log.info("  Dashboard logins already present.")
+
+    # Staff email alerts (4 Oct 2026). Two things happen here, once, at boot:
+    #   1. report whether the mailbox is usable, because a silently
+    #      unconfigured sender is exactly how an escalation goes missing;
+    #   2. drop accounts that can never be alerted (no email address), keeping
+    #      super-admins -- they are never score-routed.
+    if settings.email_alerts_enabled and email_alerts_service.email_alerts_configured(
+        settings
+    ):
+        log.info(
+            "  Staff email alerts: ON (from=%s, doctors at/above score %s)",
+            settings.sender_email,
+            settings.alert_doctor_score_threshold,
+        )
+    else:
+        log.warning(
+            "  Staff email alerts: NOT SENDING -- set SENDER_EMAIL and "
+            "GOOGLE_APP_PASSWORD in .env (alerts are still stored on the call row)"
+        )
+    removed_staff = db_service.purge_staff_without_email()
+    if removed_staff:
+        log.warning(
+            "  Removed %d staff account(s) with no email address: %s",
+            len(removed_staff),
+            ", ".join(removed_staff),
+        )
 
     # Step 8: the follow-up cron. The master switch defaults to
     # SCHEDULE_CALLS_ENABLED in .env, but an admin can flip it from the

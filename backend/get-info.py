@@ -31,7 +31,7 @@ API_KEY = os.getenv("ZERNIO_API_KEY", "")
 ACCOUNT_ID = os.getenv("ZERNIO_INBOX_ACCOUNT_ID", "6a180a034c7f364ffded3c9c")
 # Care-team number, digits only with country code (no '+').
 PARTICIPANT_ID = (
-    os.argv[1] if len(sys.argv) > 1 else os.getenv("ALERT_WHATSAPP_TO", "94766697286")
+    os.argv[1] if len(sys.argv) > 1 else os.getenv("ALERT_WHATSAPP_TO", "94782586272")
 )
 TEMPLATE_NAME = os.getenv("ZERNIO_ALERT_TEMPLATE", "sandbox_start")
 

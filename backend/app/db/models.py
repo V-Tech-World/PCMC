@@ -94,6 +94,10 @@ class StaffUser(SQLModel, table=True):
     display_name: str = ""
     role: str = "nurse"                                    # nurse|doctor|admin
     hospital: str = ""
+    # Where this person is alerted. Required at creation time -- without it a
+    # HIGH-risk call silently skips them, and a nurse who never hears about
+    # an escalation is worse than no account at all.
+    email: str = ""
     password_hash: str = ""
     password_salt: str = ""
     active: bool = True
@@ -128,6 +132,10 @@ class CallRecord(SQLModel, table=True):
     # on the row so the dashboard can show/copy it even when nothing is sent
     # (ALERT_DELIVERY=ready -- see app/services/alerts.py).
     alert_message: str = Field(default="", sa_column=Column(Text))
+    # WHO was alerted about this call, per-recipient delivery result, so the
+    # dashboard can answer "did the right people hear?". A list of
+    # {username, display_name, role, email, status}.
+    alert_recipients_json: str = Field(default="", sa_column=Column(Text))
 
     # -- Dashboard workflow (Step 9) -------------------------------------------
     reviewed: bool = False           # nurse marked the alert/case reviewed
@@ -156,6 +164,23 @@ class CallRecord(SQLModel, table=True):
 
     def get_findings(self) -> list[dict]:
         return json.loads(self.findings_json) if self.findings_json else []
+
+    def set_alert_recipients(self, recipients: list[dict]) -> None:
+        """Record who this call alerted, and each person's delivery status.
+
+        Stored on the row rather than only in the logs, because a missed
+        escalation is the failure mode that actually hurts a patient: the
+        dashboard has to be able to answer "did the nurse hear?".
+        A list of {username, display_name, role, email, status}.
+        """
+        self.alert_recipients_json = json.dumps(recipients, ensure_ascii=False)
+
+    def get_alert_recipients(self) -> list[dict]:
+        return (
+            json.loads(self.alert_recipients_json)
+            if self.alert_recipients_json
+            else []
+        )
 
 
 class AppSetting(SQLModel, table=True):

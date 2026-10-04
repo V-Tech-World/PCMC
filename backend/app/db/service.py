@@ -115,11 +115,16 @@ def attach_alert(
     status: str,
     detail: str = "",
     message: str | None = None,
+    recipients: list[dict] | None = None,
     database_url: str | None = None,
 ) -> None:
     """Update alert_status / alert_detail / alert_message after the Step 7
     prepare-or-send step. `message` is None when the caller has nothing new to
-    store (e.g. a skipped low-risk call)."""
+    store (e.g. a skipped low-risk call).
+
+    `recipients` is the email step's per-person result (see
+    app/services/email_alerts.py); None means "leave what is on the row".
+    """
     try:
         with new_session(database_url) as session:
             record = session.get(CallRecord, record_id)
@@ -128,6 +133,8 @@ def attach_alert(
                 record.alert_detail = detail[:500]
                 if message is not None:
                     record.alert_message = message
+                if recipients is not None:
+                    record.set_alert_recipients(recipients)
                 session.add(record)
                 session.commit()
     except Exception:
@@ -370,6 +377,7 @@ def create_staff(
     role: str = "nurse",
     display_name: str = "",
     hospital: str = "",
+    email: str = "",
     database_url: str | None = None,
 ) -> StaffUser:
     """Create a staff login. Caller hashes the password (app.core.security)."""
@@ -383,14 +391,57 @@ def create_staff(
             display_name=display_name or username,
             role=role,
             hospital=hospital,
+            email=email.strip(),
             password_hash=password_hash,
             password_salt=password_salt,
         )
         session.add(user)
         session.commit()
         session.refresh(user)
-        logger.info("Staff created: %s (%s)", user.username, user.role)
+        logger.info(
+            "Staff created: %s (%s) -> %s",
+            user.username, user.role, user.email or "<no email>",
+        )
         return user
+
+
+def purge_staff_without_email(
+    keep_roles: tuple[str, ...] = ("admin",),
+    database_url: str | None = None,
+) -> list[str]:
+    """Delete staff accounts that have no usable email address.
+
+    A nurse or doctor account without a mailbox can never be told about a
+    HIGH-risk call, so it is worse than no account: the routing step counts it,
+    finds no address, and the patient waits. Accounts in `keep_roles` (the
+    super-admin) are kept -- they are never score-routed and may manage the
+    hospital without a mailbox.
+
+    Idempotent and safe to call on every startup: once every routable account
+    has an email, it deletes nothing. Returns the usernames removed.
+    """
+    from app.services.email_alerts import looks_like_email
+
+    init_db(database_url)
+    removed: list[str] = []
+    with new_session(database_url) as session:
+        rows = session.exec(select(StaffUser)).all()
+        for user in rows:
+            if user.role in keep_roles:
+                continue
+            if looks_like_email(user.email):
+                continue
+            logger.warning(
+                "Removing staff account %r (%s): no email address, so it could "
+                "never be alerted",
+                user.username,
+                user.role,
+            )
+            session.delete(user)
+            removed.append(user.username)
+        if removed:
+            session.commit()
+    return removed
 
 
 def touch_last_login(username: str, database_url: str | None = None) -> None:
@@ -414,6 +465,7 @@ def ensure_default_admin(
     password: str,
     display_name: str = "",
     hospital: str = "",
+    email: str = "",
     database_url: str | None = None,
 ) -> str:
     """Seed the first admin when the staff table is empty.
@@ -434,6 +486,7 @@ def ensure_default_admin(
         role="admin",
         display_name=display_name or username,
         hospital=hospital,
+        email=email,
         database_url=database_url,
     )
     return "created"

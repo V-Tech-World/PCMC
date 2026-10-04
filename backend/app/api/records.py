@@ -24,6 +24,7 @@ from app.db.models import iso_utc
 from app.db import service as db_service
 from app.db.models import Patient
 from app.services import alerts as alerts_service
+from app.services import email_alerts as email_alerts_service
 from app.services.dialogue import CATEGORIES as DIAGNOSIS_CATEGORIES
 
 logger = logging.getLogger("voicecare.records")
@@ -71,6 +72,7 @@ def _record_to_dict(r) -> dict:
         "alert_status": r.alert_status,
         "alert_detail": r.alert_detail,
         "alert_message": r.alert_message,
+        "alert_recipients": r.get_alert_recipients(),
         "reviewed": r.reviewed,
         "nurse_note": r.nurse_note,
         "closed_by": r.closed_by,
@@ -190,12 +192,20 @@ def send_call_alert(
         )
     patient = db_service.find_patient(patient_code=row.patient_code or None)
     outcome = alerts_service.prepare_alert(row, patient, settings)
+    # Email is the second channel (see app/services/email_alerts.py): the
+    # score-routed staff are re-emailed too, so a case that failed earlier
+    # reaches the same people a fresh call would have.
+    recipients = email_alerts_service.deliver_alert_emails(row, patient, settings)
     db_service.attach_alert(
-        record_id, outcome.status, detail=outcome.detail, message=outcome.message,
+        record_id,
+        outcome.status,
+        detail=outcome.detail,
+        message=outcome.message,
+        recipients=recipients,
     )
     logger.info(
-        "Alert re-sent for record %s by %s: %s",
-        record_id, context.subject or "api-key", outcome.status,
+        "Alert re-sent for record %s by %s: %s (%d email recipient(s))",
+        record_id, context.subject or "api-key", outcome.status, len(recipients),
     )
     updated = db_service.get_call(record_id)
     return {"status": outcome.status, "detail": outcome.detail,

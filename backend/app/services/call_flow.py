@@ -30,6 +30,7 @@ from fastapi import WebSocketDisconnect
 from app.core.config import Settings, get_settings
 from app.db import service as db_service
 from app.services import alerts as alerts_service
+from app.services import email_alerts as email_alerts_service
 from app.services import recordings as recordings_service
 from app.services import stt as stt_service
 from app.services import tts as tts_service
@@ -369,18 +370,30 @@ async def _persist_and_alert(
         outcome = await asyncio.to_thread(
             alerts_service.prepare_alert, record, None, settings
         )
+        # Second channel (4 Oct 2026): a targeted email to the score-routed
+        # staff. Runs regardless of ALERT_DELIVERY -- that switch only governs
+        # the WhatsApp transport -- and never raises, so a dead mailbox cannot
+        # hide the alert text or stop the WhatsApp path.
+        recipients = await asyncio.to_thread(
+            email_alerts_service.deliver_alert_emails, record, None, settings
+        )
         await asyncio.to_thread(
             db_service.attach_alert,
             record.id,
             outcome.status,
             detail=outcome.detail,
             message=outcome.message,
+            recipients=recipients,
             database_url=settings.database_url,
         )
         logger.info(
-            "Alert for record %d: status=%s (%s) -- %d-char message stored",
-            record.id, outcome.status, outcome.detail or "no detail",
+            "Alert for record %d: status=%s (%s) -- %d-char message stored, "
+            "%d email recipient(s)",
+            record.id,
+            outcome.status,
+            outcome.detail or "no detail",
             len(outcome.message),
+            len(recipients),
         )
     except Exception:
         logger.exception("Persist/alert step failed (risk decision is in the logs)")

@@ -246,6 +246,31 @@ export default function CallsPage() {
                       </td>
                       <td className="px-2 py-2 text-xs">
                         <AlertChip status={row.alert_status} />
+                          {/* 4 Oct 2026: who heard about it, at a glance. */}
+                          {(row.alert_recipients ?? []).length > 0 && (
+                            <span
+                              className="mt-0.5 block text-neutral-500 dark:text-neutral-400"
+                              title={(row.alert_recipients ?? [])
+                                .map(
+                                  (r) =>
+                                    `${r.display_name || r.username} (${r.role}): ${r.status}`,
+                                )
+                                .join("\n")}
+                            >
+                              {(row.alert_recipients ?? []).some((r) =>
+                            r.status.startsWith("no_route"),
+                          ) ? (
+                            <b className="text-red-600 dark:text-red-400">
+                              ✉️ nobody emailed
+                            </b>
+                          ) : (
+                            <>
+                              ✉️ {(row.alert_recipients ?? []).filter((r) => r.status === "sent").length}/
+                              {(row.alert_recipients ?? []).length} emailed
+                            </>
+                          )}
+                            </span>
+                          )}
                       </td>
                       <td className="px-2 py-2 text-xs">
                         {row.closed_by

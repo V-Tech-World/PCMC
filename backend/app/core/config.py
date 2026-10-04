@@ -177,6 +177,28 @@ class Settings(BaseSettings):
         ),
     )
 
+    # -- Email alerts (staff-targeted, 4 Oct 2026) -------------------------------
+    # A HIGH-risk call is emailed to the care team AND posted to the WhatsApp
+    # thread. Recipients are chosen by RISK SCORE, not by role alone:
+    #   score <  alert_doctor_score_threshold  -> active nurses only
+    #   score >= alert_doctor_score_threshold  -> active nurses AND doctors
+    # Each staff member needs an email address on their account (set at
+    # creation time).
+    #
+    # GOOGLE_APP_PASSWORD is a Gmail App Password (not the account password):
+    # Google Account -> Security -> 2-Step Verification -> App passwords.
+    # Without it the alert text is still stored on the call row and the row
+    # records why nothing was sent -- an unconfigured mailbox must never stop
+    # the WhatsApp alert or lose the alert itself.
+    email_alerts_enabled: bool = True
+    sender_email: str = ""                 # the From: address on every alert
+    google_app_password: str = ""          # secret -- never logged
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    # Above this risk score, doctors are alerted too. 6 keeps "needs a doctor
+    # now" separate from "a nurse should call back" (HIGH risk starts at 5).
+    alert_doctor_score_threshold: float = 6.0
+
     # -- Scheduler (Step 8) ------------------------------------------------------
     # SCHEDULE_CALLS_ENABLED is the master switch.
     #   false (the default for this demo): the backend NEVER dials on its own.
@@ -207,6 +229,8 @@ class Settings(BaseSettings):
     admin_username: str = "admin"         # seeded on startup when no staff exist
     admin_password: str = ""              # required for the seed to happen
     admin_display_name: str = "System Administrator"
+    admin_email: str = ""                 # the seeded admin's mailbox (optional:
+                                          # admins are never score-routed)
     default_hospital: str = "VoiceCare"
     # Browser origins allowed to call the API (the Vite dev server).
     cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

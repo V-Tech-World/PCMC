@@ -26,6 +26,7 @@ export default function StaffPage() {
     password: "",
     role: "nurse",
     display_name: "",
+    email: "",
   });
   const [busy, setBusy] = useState(false);
 
@@ -53,7 +54,13 @@ export default function StaffPage() {
     try {
       await api.post<{ status: string }>("/auth/staff", form);
       toast.ok(`Account "${form.username}" created (${form.role}).`);
-      setForm({ username: "", password: "", role: "nurse", display_name: "" });
+      setForm({
+        username: "",
+        password: "",
+        role: "nurse",
+        display_name: "",
+        email: "",
+      });
       await load();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Could not create.");
@@ -101,6 +108,22 @@ export default function StaffPage() {
             />
           </label>
           <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
+            Alert email *
+            <input
+              required
+              type="email"
+              value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              placeholder="nurse@hospital.lk"
+              className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+            />
+          </label>
+          <span className="text-xs text-neutral-500 dark:text-neutral-400 sm:col-span-2">
+            HIGH-risk call alerts are emailed to staff by risk score (below
+            threshold: nurses · at/above: nurses + doctors) in addition to
+            WhatsApp.
+          </span>
+          <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
             Role
             <select
               value={form.role}
@@ -146,6 +169,7 @@ export default function StaffPage() {
                   <th className="px-2 py-2">Employee ID</th>
                   <th className="px-2 py-2">Name</th>
                   <th className="px-2 py-2">Role</th>
+                  <th className="px-2 py-2">Alert email</th>
                   <th className="px-2 py-2">Hospital</th>
                   <th className="px-2 py-2">Active</th>
                   <th className="px-2 py-2">Last login</th>
@@ -163,6 +187,9 @@ export default function StaffPage() {
                       <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-bold uppercase text-brand-800 dark:bg-[#122347] dark:text-brand-200">
                         {u.role}
                       </span>
+                    </td>
+                    <td className="max-w-56 truncate px-2 py-2 text-xs" title={u.email || "no email on file"}>
+                      {u.email || <span className="font-semibold text-red-600 dark:text-red-400">missing — no alerts</span>}
                     </td>
                     <td className="px-2 py-2 text-xs">{u.hospital || "--"}</td>
                     <td className="px-2 py-2 text-xs">

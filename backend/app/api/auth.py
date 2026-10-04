@@ -33,6 +33,7 @@ from app.core.security import (
 )
 from app.db.models import iso_utc
 from app.db import service as db_service
+from app.services import email_alerts
 
 logger = logging.getLogger("voicecare.auth")
 
@@ -50,6 +51,11 @@ class StaffCreate(BaseModel):
     role: str = "nurse"
     display_name: str = ""
     hospital: str = ""
+    # Enforced as required by the endpoint (not by pydantic) so an empty value
+    # gets our own 422 message. A nurse or doctor without a mailbox can never be
+    # told about a HIGH-risk call, which is the whole point of the account
+    # (4 Oct 2026).
+    email: str = Field(default="", max_length=254)
 
 
 class ResetPasswordRequest(BaseModel):
@@ -72,6 +78,7 @@ def _staff_to_dict(user) -> dict:
         "display_name": user.display_name,
         "role": user.role,
         "hospital": user.hospital,
+        "email": user.email,
         "active": user.active,
         "last_login_at": iso_utc(user.last_login_at),
     }
@@ -186,14 +193,26 @@ def list_staff(context: AuthContext = Depends(require_roles("admin"))) -> dict:
 def create_staff(
     body: StaffCreate, context: AuthContext = Depends(require_roles("admin"))
 ) -> dict:
-    """Create a dashboard login (admin only)."""
+    """Create a dashboard login (admin only).
+
+    The email address is mandatory: this account exists to be told about
+    HIGH-risk calls, so an account with no mailbox is refused up front rather
+    than silently skipped at 3am.
+    """
     if body.role not in ROLES:
         raise HTTPException(
             status_code=422,
             detail=f"role must be one of: {', '.join(ROLES)}",
         )
+    email = body.email.strip()
     if db_service.get_staff_by_username(body.username.strip()):
         raise HTTPException(status_code=409, detail="That employee ID already exists.")
+    if not email_alerts.looks_like_email(email):
+        raise HTTPException(
+            status_code=422,
+            detail="A valid email address is required (this is where the "
+                   "HIGH-risk alerts are sent).",
+        )
     settings = get_settings()
     user = db_service.create_staff(
         username=body.username.strip(),
@@ -201,6 +220,7 @@ def create_staff(
         role=body.role,
         display_name=body.display_name or body.username,
         hospital=body.hospital or settings.default_hospital,
+        email=email,
     )
     logger.info("Staff account created by %s: %s", context.subject or "api-key", user.username)
     return {"status": "created", "staff": _staff_to_dict(user)}

@@ -60,6 +60,47 @@ const ICON_CLOCK = (
     <path d="M12 7v5l3 2" />
   </svg>
 );
+/**
+ * Email alert channel health. The HIGH-risk email goes to named staff in
+ * addition to WhatsApp; when it is off or unconfigured the banner says so
+ * plainly instead of letting an escalation die dark.
+ */
+function AlertEmailStatus({
+  alerts,
+}: {
+  alerts: DashboardSummary["alerts"];
+}) {
+  if (!alerts?.email_enabled) {
+    return (
+      <Card title="Email alerts">
+        <Banner kind="error">
+          Email alerts are off (EMAIL_ALERTS_ENABLED=false). HIGH-risk calls are
+          only sent over {alerts?.channel ?? "the configured channel"}.
+        </Banner>
+      </Card>
+    );
+  }
+  if (!alerts.email_configured) {
+    return (
+      <Card title="Email alerts">
+        <Banner kind="error">
+          Email alerts are enabled but no sender is configured — set
+          SENDER_EMAIL and GOOGLE_APP_PASSWORD in backend/.env. Who should have
+          been alerted is still recorded on each call.
+        </Banner>
+      </Card>
+    );
+  }
+  return (
+    <Card title="Email alerts">
+      <p className="text-sm text-neutral-600 dark:text-neutral-300">
+        On — HIGH-risk emails go out from{" "}
+        <span className="font-semibold">{alerts.email_sender}</span> to nurses
+        (score below {alerts.doctor_score_threshold}) and nurses + doctors (at/above).
+      </p>
+    </Card>
+  );
+}
 
 /**
  * Landing screen: the six brand-blue cards from the sketch (real data from
@@ -228,7 +269,37 @@ export default function DashboardPage() {
                           {fmtDuration(row.duration_sec)}
                         </td>
                         <td className="px-2 py-2 text-xs capitalize">
-                          {row.alert_status.replace("_", " ")}
+                          {/* Status word only: the provider id (wamid) stays in
+                              the backend log, not on the board. */}
+                          {row.alert_status.split(" (")[0].replace("_", " ")}
+                          {/* 4 Oct 2026: who the email alert reached (score-routed
+                              staff). no_route means nobody could be emailed -- say
+                              so loudly; WhatsApp may still say "sent". */}
+                          {(row.alert_recipients ?? []).length > 0 && (
+                            <span
+                              className="mt-0.5 block normal-case text-neutral-500 dark:text-neutral-400"
+                              title={(row.alert_recipients ?? [])
+                                .map(
+                                  (r) =>
+                                    `${r.display_name || r.username || "No routable staff"} (${r.role}): ${r.status}`,
+                                )
+                                .join("\n")}
+                            >
+                              {(row.alert_recipients ?? []).some((r) =>
+                                r.status.startsWith("no_route"),
+                              ) ? (
+                                <b className="text-red-600 dark:text-red-400">
+                                  ✉️ nobody emailed
+                                </b>
+                              ) : (
+                                <>
+                                  ✉️{" "}
+                                  {(row.alert_recipients ?? []).filter((r) => r.status === "sent").length}/
+                                  {(row.alert_recipients ?? []).filter((r) => r.username).length} emailed
+                                </>
+                              )}
+                            </span>
+                          )}
                         </td>
                         <td className="px-2 py-2 text-xs">
                           {row.closed_by
@@ -284,6 +355,9 @@ export default function DashboardPage() {
                 Review alerts →
               </Link>
             </div>
+          {/* 4 Oct 2026: email channel health -- a dead mailbox means HIGH-risk
+              escalation silently dies, so show it where the team looks daily. */}
+          <AlertEmailStatus alerts={summary.alerts} />
           </Card>
 
           <Card title={`Due today (${summary.due_patients.length})`}>

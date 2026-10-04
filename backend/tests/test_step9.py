@@ -42,7 +42,8 @@ def staff():
     """One account per role (the three logins TC1 is about)."""
     return {
         role: db_service.create_staff(
-            username=user, password=f"{role}-pass-9", role=role, display_name=user
+            username=user, password=f"{role}-pass-9", role=role, display_name=user,
+            email=f"{user}@hospital.test",
         )
         for role, user in (
             ("nurse", "nur901"),
@@ -161,11 +162,13 @@ def test_only_admin_manages_staff_accounts(staff):
         json={
             "username": "nur902", "password": "secret-902",
             "role": "nurse", "display_name": "Nurse Two",
+            "email": "nur902@hospital.test",
         },
         headers=admin_h,
     )
     assert created.status_code == 201
     assert created.json()["staff"]["role"] == "nurse"
+    assert created.json()["staff"]["email"] == "nur902@hospital.test"
     # duplicate employee id -> 409, unknown role -> 422
     assert client.post(
         "/auth/staff", json={"username": "nur902", "password": "secret-902"},
@@ -174,6 +177,13 @@ def test_only_admin_manages_staff_accounts(staff):
     assert client.post(
         "/auth/staff", json={"username": "zed901", "password": "secret-903",
                              "role": "janitor"},
+        headers=admin_h,
+    ).status_code == 422
+    # 4 Oct 2026: a nurse/doctor account without a mailbox is refused -- it
+    # could never be told about a HIGH-risk call.
+    assert client.post(
+        "/auth/staff", json={"username": "noemail901", "password": "secret-904",
+                             "role": "nurse"},
         headers=admin_h,
     ).status_code == 422
     assert client.get("/auth/staff", headers=admin_h).json()["count"] == 4
