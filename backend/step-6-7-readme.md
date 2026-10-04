@@ -1,6 +1,6 @@
 # Step 6 + 7 -- Database (SQLModel + SQLite) + HIGH-risk alerts -- COMPLETE
 
-Steps 6 and 7 of the VoiceCare LK backend, built together: every call is now
+Steps 6 and 7 of the VoiceCare backend, built together: every call is now
 persisted in SQLite (patients table + one row per call) and every **HIGH-risk
 call produces an alert message that is stored on the row** (delivered to
 WhatsApp only when `ALERT_DELIVERY=whatsapp`). 19 new offline tests; full
@@ -38,11 +38,26 @@ suite: **224 passed, 1 deselected**.
   `POST /records/patients` (upsert -- the dashboard in Step 9 wraps these).
 - `init_db()` runs at startup (`main.py` lifespan).
 
-## Step 7 -- WhatsApp alerts (Zernio sandbox)
+## Step 7 -- HIGH-risk alert message (+ optional WhatsApp transport)
 
-### `backend/app/services/alerts.py` (new)
+> Reworked 29 Sep 2026 -- see the change log at the end of this file. The
+> section below is the original Step 7 build, with the gate corrected to match
+> the current behaviour (prepare first, deliver on request).
 
-- Delivery = the operator's exact Zernio test code, productionised:
+### `backend/app/services/alerts.py`
+
+- **Message content** (TC3, unchanged): patient code, name, phone, category,
+  risk level + score, ended reason, key symptoms (label + severity + red-flag
+  mark), every answer with transcript and interpretation, provider call id,
+  timestamp.
+- **Gate** (`prepare_alert`, was `maybe_send_alert`): only `high` risk produces
+  anything (TC2: low/medium -> `skipped`, no message, no HTTP call).
+  HIGH -> `ready` (message built + stored, **nothing sent**) by default; with
+  `ALERT_DELIVERY=whatsapp` the message is also POSTed, giving
+  `sent (<id>)` / `failed: ...` / `not_configured`. Unconfigured or disabled
+  still **stores the message** -- it is only the transport that is missing.
+- **Transport** (`send_whatsapp_alert`, opt-in) = the operator's exact Zernio
+  test code, productionised:
   `POST https://zernio.com/api/v1/inbox/conversations/{id}/messages` with
   `Authorization: Bearer <ZERNIO_API_KEY>` and
   `{"accountId": ..., "message": <text>}`.
@@ -51,19 +66,14 @@ suite: **224 passed, 1 deselected**.
   WhatsApp on sandbox **+1 202 908 7457**) -- deliberately separate env vars
   from `FROM_NUMBER` (the real toll-free voice line). Voice and alerts never
   share configuration.
-- **Gate** (`maybe_send_alert`): only `high` risk sends (TC2: low/medium ->
-  `skipped`, no HTTP call). Unconfigured/disabled -> `not_configured`.
-- **Message content** (TC3): patient code, name, phone, category, risk level
-  + score, ended reason, key symptoms (label + severity + red-flag mark),
-  every answer with transcript and interpretation, provider call id,
-  timestamp.
-- Failures never raise out of the call flow: status becomes `failed: ...`
-  and is stored on the row.
+- Failures never raise out of the call flow: the status becomes
+  `failed: ...` (or `not_configured`) and is stored on the row together with
+  the message.
 
 ### Config additions (`.env.example` documents all)
 
-`DATABASE_URL`, `ALERTS_ENABLED`, `ZERNIO_INBOX_ACCOUNT_ID`,
-`ZERNIO_ALERT_CONVERSATION_ID`.
+`DATABASE_URL`, `ALERTS_ENABLED`, `ALERT_DELIVERY`,
+`ZERNIO_INBOX_ACCOUNT_ID`, `ZERNIO_ALERT_CONVERSATION_ID`.
 
 ## Tests (`test_step6.py` + `test_step7.py`, 19 offline tests)
 
@@ -141,3 +151,88 @@ the same text; provider rejection, unconfigured, disabled and unknown-mode
 cases; full `run_call` flows for a HIGH call (`ready` + message on the row),
 a HIGH call with the transport on (`sent (msg_live)`), and a low call
 (`skipped`, no message).
+
+---
+
+## Change log -- 2 Oct 2026 (WhatsApp conversation wired up, live-verified)
+
+**`get-info.py` (ops script, deliberately outside the app).** It opens the care
+team's WhatsApp conversation with a Zernio *template* message -- WhatsApp only
+allows a business-initiated thread through an approved template -- and prints
+the conversationId to paste into `.env`. It is now env-driven
+(`ZERNIO_INBOX_ACCOUNT_ID`, `ALERT_WHATSAPP_TO`, `ZERNIO_ALERT_TEMPLATE`),
+fails loudly instead of printing `None`, and prints the exact `.env` lines plus
+the suggested template text. **The app never opens a conversation itself**: a
+window only lives 24 hours, so that is an operator decision, not a per-call one.
+
+**Two messages, not one.** `format_alert_message` (full: every answer,
+transcript, risk reasons) is what the row stores and the dashboard shows.
+`format_alert_brief` -- **6 lines / ~240 chars** -- is what actually goes out,
+because a 20-line WhatsApp message is unreadable on a phone:
+
+```
+🚨 VoiceCare — HIGH RISK
+P-0003 · Nimal Perera
++94766697286 · surgical
+Check-in 29 Sep 06:21 · score 16
+Symptoms: bleeding [RED FLAG], breathlessness [RED FLAG], pain (severe) +1 more
+Call them back now. Full transcript: dashboard → Calls.
+```
+
+**Three bugs found while wiring it up**
+
+1. `ZERNIO_INBOX_ACCOUNT_ID` / `ZERNIO_ALERT_CONVERSATION_ID` had **never been
+   read**. Pydantic maps `inbox_account_id` to `INBOX_ACCOUNT_ID`, so following
+   our own `.env.example` silently produced "WhatsApp not configured". Fixed with
+   `AliasChoices` (both the `ZERNIO_*` and the short names work).
+2. Every send logged `id=unknown`: Zernio answers
+   `{"success": true, "data": {"messageId": ...}}` and the code only read the
+   top level. Now parsed from the envelope (live id:
+   `wamid.HBgLOTQ3NjY2OTcyODYVAgARGBJBQzhDRjI1QjEyNzJGMEVGODAA`).
+3. `format_alert_brief` first read findings as objects; `get_findings()` returns
+   JSON **dicts**, so the real send path raised `AttributeError`. Caught by
+   previewing the message before sending; now regression-tested.
+
+**Also:** a 400/404/410 from a closed window now says *"re-open it with
+`python get-info.py`"*, and startup logs
+`Alerts: enabled (delivery=whatsapp, conversation=6aaadf93...)` plus a warning
+when `whatsapp` is selected but not configured.
+
+**Live verification (one real message, sent to the care-team number):**
+`sent (wamid.HBgLOTQ3NjY2OTcyODYVAgARGBJBQzhDRjI1QjEyNzJGMEVGODAA)`, with the
+full 679-char message stored on the row.
+
+**Tests** (`test_step7.py`, `test_step9.py`, `conftest.py`): brief-vs-full
+content, findings-as-dicts, no-findings case, nested envelope id, closed-window
+hint, both dashboard channel labels, and the re-send endpoint. `conftest.py` now
+**pins** `ALERT_DELIVERY`/`ZERNIO_*` so the suite can never follow -- or act on --
+the developer's local `.env`.
+
+---
+
+## Change log -- 2 Oct 2026 (send by default + "Send alert now")
+
+A live call scored HIGH and the row said **Ready to send** instead of **Sent**.
+Two causes, one of them a config-cache trap:
+
+1. **The backend had not been restarted.** `get_settings()` is `@lru_cache`d at
+   startup, so a running process keeps the old `ALERT_DELIVERY=ready` from
+   before the `.env` was updated. Any `.env`/code change here needs a restart.
+2. **The default was `ready`.** It is now **`whatsapp`**: a HIGH-risk call
+   alerts the care team automatically, and `ready` is the deliberate
+   store-only fallback for when no conversation is configured.
+
+**"Send alert now"** (`POST /records/calls/{id}/alert`, nurse|doctor|admin).
+Alerts normally go out at the end of the call, but a row can still end up
+`ready` / `failed` / `not_configured` -- the 24 h window closed, the backend was
+mid-restart, delivery was off. The full message is already on the row, so this
+re-runs *prepare + deliver* for that row (no second call to the patient, no new
+risk assessment). Returns the new status; 404 for an unknown id, **409 for a
+non-HIGH call** (alerts are HIGH-only, and silently re-alerting a low call would
+be worse than a clear refusal). The dashboard shows the button on any HIGH-risk
+row that has a stored message, next to Copy.
+
+Startup now logs `Alerts: enabled (delivery=whatsapp, conversation=6aaadf93...)`
+and warns when `whatsapp` is selected but not configured, so this state is
+visible in the first three lines of the log instead of being discovered in the
+dashboard.

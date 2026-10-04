@@ -1,5 +1,5 @@
 """
-VoiceCare LK backend -- FastAPI application entrypoint.
+VoiceCare backend -- FastAPI application entrypoint.
 
 Endpoints (Steps 1-9):
 - GET  /health              : liveness + config sanity (no secrets exposed)
@@ -40,6 +40,7 @@ from app.core.timing import (
 from app.db import service as db_service
 from app.db.engine import init_db
 from app.services import scheduler
+from app.services import alerts as alerts_service
 
 
 def _mask(secret: str) -> str:
@@ -54,7 +55,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging(settings.log_level)
     log = logging.getLogger("voicecare.main")
-    log.info("VoiceCare LK backend starting (v%s)", health.API_VERSION)
+    log.info("VoiceCare backend starting (v%s)", health.API_VERSION)
     # Real-time audio pacing needs a fine OS timer, otherwise our 20 ms frames
     # drift (~31 ms each on Windows) and the patient hears stretched audio.
     acquire_fine_timer()
@@ -84,10 +85,20 @@ async def lifespan(app: FastAPI):
     init_db(settings.database_url)
     log.info("  Database: %s", (settings.database_url or "sqlite (default voicecare.db)"))
     log.info(
-        "  WhatsApp alerts: %s (sandbox conversation %s)",
+        "  Alerts: %s (delivery=%s, conversation=%s)",
         "enabled" if settings.alerts_enabled else "disabled",
-        settings.alert_conversation_id or "<not configured>",
+        alerts_service.delivery_mode(settings),
+        settings.alert_conversation_id or "<not configured -- run get-info.py>",
     )
+    if settings.alerts_enabled and alerts_service.delivery_mode(
+        settings
+    ) == alerts_service.DELIVERY_WHATSAPP and not alerts_service.alerts_configured(
+        settings
+    ):
+        log.warning(
+            "  ALERT_DELIVERY=whatsapp but the conversation is not configured -- "
+            "HIGH-risk messages will be stored on the call row, not sent"
+        )
 
     # Step 9: seed the first dashboard admin so the demo has a login.
     seeded = db_service.ensure_default_admin(
@@ -116,10 +127,10 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.stop()
     release_fine_timer()
-    log.info("VoiceCare LK backend stopped")
+    log.info("VoiceCare backend stopped")
 
 
-app = FastAPI(title="VoiceCare LK API", version=health.API_VERSION, lifespan=lifespan)
+app = FastAPI(title="VoiceCare API", version=health.API_VERSION, lifespan=lifespan)
 
 # Step 9: the dashboard runs on Vite (5173 by default) -- allow those origins.
 app.add_middleware(

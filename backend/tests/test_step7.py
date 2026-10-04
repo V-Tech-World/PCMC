@@ -147,6 +147,92 @@ def test_low_and_medium_risk_do_not_alert(monkeypatch):
 # ------------------------------------------------------------- TC1: send
 
 
+def test_brief_alert_is_phone_sized_and_carries_the_key_facts():
+    """What actually goes out is short: who/what/when/symptoms/action."""
+    brief = alerts.format_alert_brief(_FakeRecord(), _FakePatient())
+    lines = brief.splitlines()
+    assert len(lines) <= 7                       # readable on a phone
+    assert "HIGH RISK" in brief
+    assert "P-0001" in brief and "Kamal" in brief
+    assert "+94777000001" in brief
+    assert "cardiac" in brief
+    assert "score 7" in brief
+    assert "chest pain" in brief and "severe" in brief
+    assert "RED FLAG" in brief
+    assert "dashboard" in brief.lower()
+    # The full detail stays on the row / in the dashboard, not in the SMS.
+    assert "no I forgot my morning dose" not in brief
+    assert "call_abc" not in brief
+
+
+def test_brief_alert_reads_findings_as_dicts():
+    """Regression: findings come back from the row as JSON dicts.
+
+    Reading them as objects crashed the real send path; _FakeRecord returns
+    dicts exactly like CallRecord.get_findings() does.
+    """
+    brief = alerts.format_alert_brief(_FakeRecord())
+    assert "chest pain (severe) [RED FLAG]" in brief
+
+
+def test_brief_alert_without_findings_still_sends():
+    record = _FakeRecord()
+    record._findings = []
+    brief = alerts.format_alert_brief(record)
+    assert "none recorded" in brief
+    assert "HIGH RISK" in brief
+
+
+class _FakeSettingsPatch:
+    """Tiny helper: patch requests.post for one call, then undo it."""
+
+    def __init__(self, post):
+        self.post = post
+
+    def __enter__(self):
+        self._original = alerts.requests.post
+        alerts.requests.post = self.post
+        return self
+
+    def __exit__(self, *exc):
+        alerts.requests.post = self._original
+
+
+class _FakePatient:
+    """Optional patient row passed to the formatters for the name."""
+
+    name = "Kamal Perera"
+
+
+def test_message_id_is_read_from_the_nested_data_envelope():
+    """Zernio answers {"success": true, "data": {"messageId": ...}}."""
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        resp = type("R", (), {})()
+        resp.status_code = 200
+        resp.json = lambda: {"success": True,
+                             "data": {"messageId": "wamid.HBgLOTQ3NjY2"}}
+        return resp
+
+    with _FakeSettingsPatch(_fake_post):
+        sent_id = alerts.send_whatsapp_alert("x", _alert_settings())
+    assert sent_id == "wamid.HBgLOTQ3NjY2"
+
+
+def test_closed_conversation_error_points_at_get_info():
+    """A 4xx from a closed 24h window must tell the operator what to do."""
+    def _gone(url, headers=None, json=None, timeout=None):
+        resp = type("R", (), {})()
+        resp.status_code = 410
+        resp.json = lambda: {"error": "conversation closed"}
+        return resp
+
+    with _FakeSettingsPatch(_gone):
+        with pytest.raises(alerts.AlertError) as excinfo:
+            alerts.send_whatsapp_alert("x", _alert_settings())
+    assert "get-info.py" in str(excinfo.value)
+    assert "ZERNIO_ALERT_CONVERSATION_ID" in str(excinfo.value)
+
+
 def test_high_risk_sends_whatsapp_via_sandbox_conversation(monkeypatch):
     """TC1 (opt-in transport): a HIGH-risk call posts to the sandbox thread."""
     captured = {}
@@ -166,9 +252,12 @@ def test_high_risk_sends_whatsapp_via_sandbox_conversation(monkeypatch):
     assert captured["url"].endswith("/inbox/conversations/conv-456/messages")
     assert captured["headers"]["Authorization"] == "Bearer sk_test"
     assert captured["json"]["accountId"] == "acct-123"
-    assert "P-0001" in captured["json"]["message"]
-    # The stored text is the same message that went out.
-    assert outcome.message == captured["json"]["message"]
+    # The SHORT version goes out; the FULL version is what the row keeps.
+    posted = captured["json"]["message"]
+    assert "HIGH RISK" in posted and "dashboard" in posted.lower()
+    assert "no I forgot my morning dose" not in posted
+    assert outcome.message == alerts.format_alert_message(_FakeRecord())
+    assert "no I forgot my morning dose" in outcome.message
 
 
 def test_provider_rejection_is_reported_not_raised(monkeypatch):

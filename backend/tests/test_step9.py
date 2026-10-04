@@ -334,6 +334,44 @@ def test_call_now_requires_staff_token_and_dials_the_patient(staff, monkeypatch)
     assert len(calls) == before
 
 
+def test_staff_can_send_a_high_risk_alert_after_the_fact(staff):
+    """A call that ended up 'ready' (closed conversation, old config, delivery
+    off) can still be alerted: the message is on the row, so re-sending is just
+    re-running prepare+deliver -- no second call to the patient."""
+    client = _client()
+    call_id = _seed_high_call()
+    nurse_h, _ = _login(client, "nur901", "nurse-pass-9")
+
+    sent = client.post(f"/records/calls/{call_id}/alert", headers=nurse_h)
+    assert sent.status_code == 200
+    body = sent.json()
+    # conftest pins ALERT_DELIVERY=ready + no conversation, so the re-run
+    # prepares the message again instead of sending it.
+    assert body["status"] == "ready"
+    assert body["call"]["alert_message"].startswith("\U0001F6A8")
+    assert body["call"]["risk_level"] == "high"
+
+    # An unknown row is a 404, and a non-HIGH row is refused (409).
+    assert client.post("/records/calls/999999/alert", headers=nurse_h).status_code == 404
+
+    low_call = db_service.record_call(
+        dialogue=_FakeDialogue([
+            {"question_id": "medication", "kind": "yes_no",
+             "interpretation": True, "transcript": "yes I took them"},
+        ]),
+        assessment=assess_conversation([
+            {"question_id": "medication", "kind": "yes_no",
+             "interpretation": True, "transcript": "yes I took them"},
+        ]),
+        provider_call_id="ca_low",
+        to_number="+94771000999",
+        ended_reason="dialogue finished",
+    )
+    assert client.post(
+        f"/records/calls/{low_call.id}/alert", headers=nurse_h
+    ).status_code == 409
+
+
 # ------------------------------------------------------- review / close (roles)
 
 class _FakeDialogue:
@@ -442,9 +480,28 @@ def test_dashboard_summary_feeds_the_cards_and_call_list(staff):
     assert data["scheduler"]["enabled"] is False
     assert data["due_patients"][0]["patient_code"] == "P-901"
     assert "max_call_duration_sec" in data["cost_rails"]
-    # Step 7 rework: the shipped mode prepares the alert in-dashboard.
+    # Step 7 rework: the shipped default prepares the alert in-dashboard.
     assert data["alerts"]["delivery"] == "ready"
     assert data["alerts"]["channel"] == "prepared in-dashboard (manual delivery)"
+
+
+def test_dashboard_reports_the_configured_alert_channel(staff, monkeypatch):
+    """The cards describe the delivery mode the backend is actually in."""
+    client = _client()
+    nurse_h, _ = _login(client, "nur901", "nurse-pass-9")
+
+    ready = client.get("/dashboard/summary", headers=nurse_h).json()["alerts"]
+    assert ready["delivery"] == "ready"
+    assert ready["channel"] == "prepared in-dashboard (manual delivery)"
+
+    monkeypatch.setenv("ALERT_DELIVERY", "whatsapp")
+    get_settings.cache_clear()
+    try:
+        live = client.get("/dashboard/summary", headers=nurse_h).json()["alerts"]
+        assert live["delivery"] == "whatsapp"
+        assert live["channel"] == "whatsapp (Zernio inbox)"
+    finally:
+        get_settings.cache_clear()
 
 
 def test_activity_is_the_compact_risk_list(staff):

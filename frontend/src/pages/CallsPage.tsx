@@ -265,6 +265,7 @@ export default function CallsPage() {
                             busy={busy}
                             canReview={can("review_call")}
                             canClose={can("close_case")}
+                            canAlert={can("review_call")}
                             onSaveNote={() =>
                               void patch(row.id, { nurse_note: noteDraft }, "Case note saved.")
                             }
@@ -278,6 +279,11 @@ export default function CallsPage() {
                             onClose={() =>
                               void patch(row.id, { close_case: true }, "Case closed ✓")
                             }
+                            onAlertSent={(msg, isError) => {
+                              if (isError) toast.error(msg);
+                              else toast.ok(msg);
+                              void load();
+                            }}
                           />
                         </td>
                       </tr>

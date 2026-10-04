@@ -5,9 +5,9 @@ import { useAuth } from "../lib/auth";
 import { Spinner } from "../components/ui";
 
 /**
- * Login screen (Step 9, matches designs/73ef74e7-...png): green gradient
- * backdrop, white rounded card, VoiceCare LK logo, role tabs, hospital,
- * Employee ID + password, green "Login to Dashboard" button.
+ * Login screen (Step 9, matches designs/73ef74e7-...png): blue gradient
+ * backdrop, white rounded card, VoiceCare logo, role tabs, hospital,
+ * Employee ID + password, blue "Login to Dashboard" button.
  *
  * The role tabs only pick the Employee-ID placeholder -- the real role comes
  * from the account (nurse|doctor|admin), so tabs can never escalate rights.
@@ -106,7 +106,7 @@ export default function LoginPage() {
         <div className="text-center">
           <img
             src="/logo-horizontal.svg"
-            alt="VoiceCare LK"
+            alt="VoiceCare"
             className="mx-auto h-14 w-auto"
           />
           <p className="mt-3 text-sm text-neutral-500">

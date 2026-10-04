@@ -1,4 +1,4 @@
-# VoiceCare LK -- backend (Step 3: turn-based structured dialogue)
+# VoiceCare -- backend (Step 3: turn-based structured dialogue)
 
 **Previous steps:** `step-1-readme.md` (telephony), `step-2-readme.md`
 (batch transcription).

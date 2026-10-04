@@ -1,1 +1,1 @@
-"""VoiceCare LK backend application package."""
+"""VoiceCare backend application package."""

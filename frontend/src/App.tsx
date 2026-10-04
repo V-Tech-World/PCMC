@@ -15,7 +15,7 @@ function Splash() {
     <div className="grid min-h-screen place-items-center bg-gradient-to-br from-brand-500 to-brand-700">
       <div className="text-center text-white">
         <img src="/icon-master.svg" alt="" className="mx-auto h-16 w-16" />
-        <p className="mt-4 font-semibold">Loading VoiceCare LK…</p>
+        <p className="mt-4 font-semibold">Loading VoiceCare…</p>
       </div>
     </div>
   );

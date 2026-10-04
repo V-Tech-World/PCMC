@@ -55,6 +55,58 @@ def alaw_to_pcm16(alaw_bytes: bytes) -> bytes:
     return audioop.alaw2lin(alaw_bytes, SAMPLE_WIDTH_BYTES)
 
 
+def beep_pcm16(
+    frequency_hz: float = 1000.0,
+    duration_ms: float = 350.0,
+    volume: float = 0.45,
+    sample_rate_hz: int = SAMPLE_RATE_HZ,
+) -> bytes:
+    """A short "speak now" tone as 16-bit PCM mono at 8 kHz.
+
+    The final open question ends with "...after the beep", so the beep IS the
+    cue -- without it the patient either starts talking over the question or
+    waits in silence for a prompt that never comes. Two short beeps separated
+    by a gap read as a deliberate signal over a phone line (and are harder to
+    mistake for echo or line noise than one long tone).
+
+    Short raised-cosine fades at both ends: a hard-edged square wave clicks,
+    which on a phone line sounds like a fault rather than a prompt.
+    """
+    import math
+    import struct
+
+    if duration_ms <= 0:
+        return b""
+    half_ms = max(40.0, duration_ms / 2.0)
+    gap_ms = max(30.0, duration_ms / 4.0)
+    total_ms = half_ms * 2 + gap_ms
+    count = int(sample_rate_hz * total_ms / 1000.0)
+    samples: list[int] = []
+    for i in range(count):
+        t_ms = i * 1000.0 / sample_rate_hz
+        # Which part of the beep-beep are we in?
+        if t_ms < half_ms:
+            local = t_ms
+        elif t_ms < half_ms + gap_ms:
+            continue
+        elif t_ms < half_ms * 2 + gap_ms:
+            local = t_ms - half_ms - gap_ms
+        else:
+            break
+        phase = 2.0 * math.pi * frequency_hz * local / 1000.0
+        # Raised-cosine fade over the first/last 15 ms of each beep.
+        fade_ms = 15.0
+        envelope = 1.0
+        if local < fade_ms:
+            envelope = 0.5 - 0.5 * math.cos(math.pi * local / fade_ms)
+        elif local > half_ms - fade_ms:
+            remaining = half_ms - local
+            envelope = 0.5 - 0.5 * math.cos(math.pi * remaining / fade_ms)
+        value = int(32767 * volume * envelope * math.sin(phase))
+        samples.append(value)
+    return struct.pack(f"<{len(samples)}h", *samples)
+
+
 def write_wav(path: Path, pcm16_bytes: bytes) -> Path:
     """Write 16-bit PCM mono audio to a WAV file, creating parent dirs."""
     path = Path(path)

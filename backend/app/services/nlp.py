@@ -562,6 +562,7 @@ def assess_risk(
     findings: Sequence[SymptomFinding],
     medication_missed: bool = False,
     ungraded_pain: bool = False,
+    unanswered: int = 0,
 ) -> RiskAssessment:
     """Transparent additive risk score with red-flag overrides.
 
@@ -573,6 +574,12 @@ def assess_risk(
     - Ungraded pain (patient said yes, but the severity could not be
       established) adds +2 -- a failed grading must not read as "no problem".
     - score >= 5 -> HIGH; score >= 2 -> MEDIUM; else LOW.
+
+    `unanswered` counts questions whose audio never arrived. It adds NO
+    points (we must not invent risk from a transport failure) but it is stated
+    in the reasons, because silence on a call is ambiguous: it reads as "no
+    symptoms" to anyone skimming the record, which is how a real call with a
+    lost answer ends up triaged as reassuring.
     """
     reasons: list[str] = []
     score = 0.0
@@ -598,6 +605,12 @@ def assess_risk(
         reasons.append(
             "pain reported but severity not established "
             f"(+{_UNGRADED_PAIN_SCORE:.0f})"
+        )
+
+    if unanswered:
+        reasons.append(
+            f"{unanswered} question(s) answered with no usable audio -- risk "
+            "may be understated; check the transcript before closing this call"
         )
 
     if red_flag_labels:
@@ -724,8 +737,18 @@ def assess_conversation(
         and pain_finding.severity is None
     )
 
+    # Questions the patient never answered in a way we could use. Silence is
+    # ambiguous on a phone call, so it is reported rather than silently read
+    # as "no symptoms" (live 4 Oct 2026: 3 of 5 answers lost to the media leg
+    # and the record still looked like a calm call).
+    unanswered = sum(
+        1 for interp, transcript in by_qid.values()
+        if interp is None and not str(transcript or "").strip()
+    )
+
     return assess_risk(
         tuple(findings_by_id.values()),
         medication_missed,
         ungraded_pain=ungraded_pain,
+        unanswered=unanswered,
     )

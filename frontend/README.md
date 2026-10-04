@@ -1,4 +1,4 @@
-# VoiceCare LK -- Staff Dashboard (frontend)
+# VoiceCare -- Staff Dashboard (frontend)
 
 Vite + React 19 + TypeScript (strict) + Tailwind CSS 4 + react-router 7.
 

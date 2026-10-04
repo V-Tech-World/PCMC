@@ -62,7 +62,7 @@ const ICON_CLOCK = (
 );
 
 /**
- * Landing screen: the six green cards from the sketch (real data from
+ * Landing screen: the six brand-blue cards from the sketch (real data from
  * GET /dashboard/summary) + recent activity table + open alerts + due
  * patients with a guarded Call-Now shortcut.
  */

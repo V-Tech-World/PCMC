@@ -1,5 +1,6 @@
 /** Expanded call detail: transcript answers, findings, risk + actions. */
 import { useState } from "react";
+import { api, ApiError } from "../lib/api";
 import type { CallRow } from "../lib/types";
 import { RiskBadge, fmtDateTime } from "./ui";
 
@@ -10,9 +11,11 @@ export default function CallDetail({
   busy,
   canReview,
   canClose,
+  canAlert,
   onSaveNote,
   onMarkReviewed,
   onClose,
+  onAlertSent,
 }: {
   row: CallRow;
   noteDraft: string;
@@ -20,14 +23,41 @@ export default function CallDetail({
   busy: boolean;
   canReview: boolean;
   canClose: boolean;
+  canAlert: boolean;
   onSaveNote: () => void;
   onMarkReviewed: () => void;
   onClose: () => void;
+  onAlertSent: (message: string, isError?: boolean) => void;
 }) {
   const answers = row.answers ?? [];
   const findings = row.findings ?? [];
   const reasons = row.risk_reasons ?? [];
   const [copied, setCopied] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  /** Re-run the alert for this HIGH-risk call (conversation was closed, the
+   *  backend was still on the old config, delivery was off...). */
+  async function sendAlert() {
+    setSending(true);
+    try {
+      const res = await api.post<{ status: string; detail?: string }>(
+        `/records/calls/${row.id}/alert`,
+      );
+      onAlertSent(
+        res.status.startsWith("sent")
+          ? `Alert sent (${res.status}).`
+          : `Alert not sent: ${res.status}${res.detail ? ` — ${res.detail}` : ""}`,
+        !res.status.startsWith("sent"),
+      );
+    } catch (err) {
+      onAlertSent(
+        err instanceof ApiError ? err.message : "Could not send the alert.",
+        true,
+      );
+    } finally {
+      setSending(false);
+    }
+  }
 
   // Step 7: the alert text is prepared for every HIGH-risk call and kept on the
   // row, so the nurse can hand it to the ward over whatever channel they use.
@@ -137,15 +167,28 @@ export default function CallDetail({
           <div className="rounded-lg bg-amber-50 px-3 py-2 text-sm ring-1 ring-amber-200 dark:bg-amber-950/40 dark:ring-amber-800">
             <div className="flex items-center justify-between gap-2">
               <b className="text-amber-800 dark:text-amber-200">
-                Alert message (ready to send)
+                Alert message
+                {row.alert_status === "ready" ? " (ready to send)" : ""}
               </b>
-              <button
-                type="button"
-                onClick={() => void copyAlert()}
-                className="shrink-0 cursor-pointer rounded-lg bg-white px-2 py-1 text-xs font-bold text-amber-800 ring-1 ring-amber-300 transition-all hover:bg-amber-100 active:scale-95 dark:bg-white/10 dark:text-amber-200 dark:ring-amber-700"
-              >
-                {copied ? "Copied ✓" : "Copy"}
-              </button>
+              <div className="flex shrink-0 gap-1.5">
+                {canAlert && row.risk_level === "high" && (
+                  <button
+                    type="button"
+                    onClick={() => void sendAlert()}
+                    disabled={sending || busy}
+                    className="cursor-pointer rounded-lg bg-brand-700 px-2 py-1 text-xs font-bold text-white transition-all hover:bg-brand-800 active:scale-95 disabled:opacity-50"
+                  >
+                    {sending ? "Sending…" : "Send now"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void copyAlert()}
+                  className="shrink-0 cursor-pointer rounded-lg bg-white px-2 py-1 text-xs font-bold text-amber-800 ring-1 ring-amber-300 transition-all hover:bg-amber-100 active:scale-95 dark:bg-white/10 dark:text-amber-200 dark:ring-amber-700"
+                >
+                  {copied ? "Copied ✓" : "Copy"}
+                </button>
+              </div>
             </div>
             <pre
               id="alert-message-box"
@@ -164,7 +207,7 @@ export default function CallDetail({
             rows={3}
             disabled={!canReview}
             placeholder={canReview ? "Short note for the team…" : "Read-only"}
-            className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200 disabled:bg-neutral-100 dark:bg-white/10"
+            className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200 disabled:bg-neutral-100 dark:bg-white/10"
           />
         </label>
 

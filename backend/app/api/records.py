@@ -18,9 +18,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.core.config import get_settings
 from app.core.security import AuthContext, require_auth, require_roles
 from app.db import service as db_service
 from app.db.models import Patient
+from app.services import alerts as alerts_service
 from app.services.dialogue import CATEGORIES as DIAGNOSIS_CATEGORIES
 
 logger = logging.getLogger("voicecare.records")
@@ -158,6 +160,45 @@ def patch_call_record(
         "Call %s updated by %s: %s", record_id, context.subject or "api-key", list(fields)
     )
     return {"status": "updated", "call": _record_to_dict(row)}
+
+
+@router.post("/calls/{record_id}/alert")
+def send_call_alert(
+    record_id: int,
+    context: AuthContext = Depends(require_roles("nurse", "doctor", "admin")),
+) -> dict:
+    """Re-run the alert for a finished HIGH-risk call and send it now.
+
+    2 Oct 2026: alerts are sent automatically at the end of a call
+    (ALERT_DELIVERY=whatsapp), but a call can still end up with
+    alert_status='ready'/'failed' -- the conversation was closed, the backend
+    was still starting up with the old config, the delivery was off. The
+    message is already on the row, so sending it later is just re-running the
+    prepare+deliver step instead of re-calling the patient.
+    """
+    settings = get_settings()
+    row = db_service.get_call(record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No call record with id {record_id}.")
+    if row.risk_level != "high":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Only HIGH-risk calls alert (this one is {row.risk_level})."
+            ),
+        )
+    patient = db_service.find_patient(patient_code=row.patient_code or None)
+    outcome = alerts_service.prepare_alert(row, patient, settings)
+    db_service.attach_alert(
+        record_id, outcome.status, detail=outcome.detail, message=outcome.message,
+    )
+    logger.info(
+        "Alert re-sent for record %s by %s: %s",
+        record_id, context.subject or "api-key", outcome.status,
+    )
+    updated = db_service.get_call(record_id)
+    return {"status": outcome.status, "detail": outcome.detail,
+            "call": _record_to_dict(updated) if updated else None}
 
 
 @router.get("/patients")

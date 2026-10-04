@@ -77,7 +77,7 @@ export default function StaffPage() {
               value={form.username}
               onChange={(e) => setForm({ ...form, username: e.target.value })}
               placeholder="nur002"
-              className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+              className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
             />
           </label>
           <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
@@ -88,7 +88,7 @@ export default function StaffPage() {
               type="password"
               value={form.password}
               onChange={(e) => setForm({ ...form, password: e.target.value })}
-              className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+              className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
             />
           </label>
           <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
@@ -97,7 +97,7 @@ export default function StaffPage() {
               value={form.display_name}
               onChange={(e) => setForm({ ...form, display_name: e.target.value })}
               placeholder="Nurse Nimali"
-              className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+              className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
             />
           </label>
           <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
@@ -105,7 +105,7 @@ export default function StaffPage() {
             <select
               value={form.role}
               onChange={(e) => setForm({ ...form, role: e.target.value })}
-              className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+              className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
             >
               {ROLES.map((r) => (
                 <option key={r} value={r}>
@@ -160,7 +160,7 @@ export default function StaffPage() {
                     <td className="px-2 py-2 font-semibold">{u.username}</td>
                     <td className="px-2 py-2">{u.display_name}</td>
                     <td className="px-2 py-2">
-                      <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-bold uppercase text-brand-800 dark:bg-[#15251c] dark:text-brand-200">
+                      <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-bold uppercase text-brand-800 dark:bg-[#122347] dark:text-brand-200">
                         {u.role}
                       </span>
                     </td>

@@ -42,9 +42,9 @@ Role matrix (`GET /auth/roles`): view/call/review -> all three roles;
 
 | Screen | Design / requirement |
 |---|---|
-| `LoginPage` | green gradient card, logo, role tabs (placeholder only -- the server decides the role), hospital, Employee ID, password, "Login to Dashboard"; "Forgot password?" swaps to a self-service reset (employee ID + new password + confirm, no admin/third party); the card keeps light, fully readable colours even in dark mode (`.login-card`) |
+| `LoginPage` | blue gradient card, logo, role tabs (placeholder only -- the server decides the role), hospital, Employee ID, password, "Login to Dashboard"; "Forgot password?" swaps to a self-service reset (employee ID + new password + confirm, no admin/third party); the card keeps light, fully readable colours even in dark mode (`.login-card`) |
 | `Layout` | dark sidebar (logo, nav dividers, **Logout** bar pinned bottom), light top bar with profile circle right, drawer under `lg` (TC4) |
-| `DashboardPage` | the sketch's **6 green cards** (StatCard) from `/dashboard/summary` + recent-calls table + open alerts + due list with a Call shortcut |
+| `DashboardPage` | the sketch's **6 brand-blue cards** (StatCard) from `/dashboard/summary` + recent-calls table + open alerts + due list with a Call shortcut |
 | `CallsPage` | **TC2** risk colour badges (red/amber/green) + filter chips; rows expand to transcript answers, findings, risk reasons, the **prepared alert message (Copy)** + review/note/close actions (role-gated) |
 | `PatientsPage` | admin register form **and per-row Edit** (same endpoint, pre-filled; the code stays the record key), discharge type incl. `respiratory` / `diabetic`, language + active toggle, plus the **Call now** button behind a ConfirmDialog that names the number and warns about billing (**TC3** cost guard) |
 | `SchedulePage` | **Step 8**: master-switch banner (ON/OFF + note), full timeline with next check-in per patient, admin "Run one tick now" (confirm dialog says plainly whether it can dial) |

@@ -43,7 +43,11 @@ from app.core.config import get_settings
 logger = logging.getLogger("voicecare.tts")
 
 TARGET_RATE_HZ = 8000
-FILLER_TEXT = "One moment, please."  # README section 4: plays while STT runs
+# No comma, on purpose. Measured 4 Oct 2026: SAPI renders "One moment, please."
+# with a 0.63 s dead pause between the two words (it is the comma), which the
+# patient hears as a stutter right after they finish answering. Without it the
+# same gap is 0.15 s.
+FILLER_TEXT = "One moment please."
 _PEAK_LIMIT = 31000                 # headroom so codec encoding never clips
 
 # Telephony shaping (applied after resampling, before encoding).
@@ -155,6 +159,40 @@ def _match_level(pcm16: bytes) -> bytes:
 def apply_telephony_chain(pcm16: bytes) -> bytes:
     """Public: band-limit + level-match already-8 kHz PCM16 mono audio."""
     return _match_level(_bandpass_telephony(pcm16))
+
+
+def trim_silence(
+    pcm16: bytes,
+    threshold_ratio: float = 0.06,
+    margin_ms: int = 40,
+) -> bytes:
+    """Strip the dead air around speech, keeping a small margin.
+
+    SAPI pads its output generously: the filler measured 4 Oct 2026 carried a
+    130 ms lead-in and a 940 ms tail, so the patient heard ~1 s of nothing
+    after "please" while the next question was already on its way. Trimming is
+    applied ONLY to the cached filler (questions keep their natural pacing);
+    the margins stop the trim from clipping a plosive or a word ending.
+    """
+    if audioop is None or len(pcm16) < 4:
+        return pcm16
+    peak = audioop.max(pcm16, 2)
+    if peak == 0:
+        return pcm16
+    floor = max(200, int(peak * threshold_ratio))
+    step = 320  # 20 ms, the same granularity as the frames we transmit
+    first = last = None
+    for offset in range(0, len(pcm16) - step, step):
+        if audioop.rms(pcm16[offset:offset + step], 2) >= floor:
+            if first is None:
+                first = offset
+            last = offset + step
+    if first is None:  # all silence -- keep a short slice rather than nothing
+        return pcm16[:step]
+    margin = margin_ms * 16  # 16 bytes per sample at 8 kHz mono
+    start = max(0, first - margin)
+    end = min(len(pcm16), last + margin)
+    return pcm16[start:end]
 
 
 def list_voices() -> list[str]:
@@ -290,9 +328,17 @@ class Speaker:
         return pcm16
 
     def filler(self) -> bytes:
-        """Cached short filler audio to play while STT runs (README section 4)."""
+        """Cached short filler audio to play while STT runs(README section 4).
+
+        Trimmed once, here: the point of the filler is to cover the STT gap, so
+        leading/trailing silence only makes the patient wait longer.
+        """
         if self._filler_pcm is None:
-            self._filler_pcm = self.synthesize(FILLER_TEXT)
+            self._filler_pcm = trim_silence(self.synthesize(FILLER_TEXT))
+            logger.info(
+                "Filler ready: %r -> %.2fs of audio",
+                FILLER_TEXT, len(self._filler_pcm) / 2 / 8000,
+            )
         return self._filler_pcm
 
 

@@ -35,8 +35,14 @@ def clean_environment(monkeypatch, tmp_path):
     # Step 6/7 tests must never touch the real voicecare.db file: a shared
     # in-memory SQLite (StaticPool) keeps the suite hermetic and fast.
     monkeypatch.setenv("DATABASE_URL", "sqlite://")
-    # Alerts must never actually fire from tests.
+    # Alerts must never actually fire from tests. These are pinned (not just
+    # "disabled") because the app's Settings also reads backend/.env: without
+    # them the suite would follow whatever delivery mode the developer has
+    # configured locally, and could even send a real message.
     monkeypatch.setenv("ALERTS_ENABLED", "false")
+    monkeypatch.setenv("ALERT_DELIVERY", "ready")
+    monkeypatch.setenv("ZERNIO_INBOX_ACCOUNT_ID", "")
+    monkeypatch.setenv("ZERNIO_ALERT_CONVERSATION_ID", "")
     get_settings.cache_clear()
     media_auth.reset()
     yield

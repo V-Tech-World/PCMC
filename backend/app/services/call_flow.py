@@ -42,6 +42,10 @@ logger = logging.getLogger("voicecare.call_flow")
 _PCM_BYTES_PER_20MS = 320
 _SEND_FRAME_SECONDS = 0.02
 _ECHO_SETTLE_SECONDS = 0.35  # ignore mic input briefly after we finish speaking
+# A capture window open at least this long, with less audio than the minimum
+# below, means the media leg delivered nothing (live 4 Oct 2026).
+_DEAD_WINDOW_SEC = 3.0
+_DEAD_WINDOW_AUDIO_SEC = 0.25
 
 
 class CallEnded(RuntimeError):
@@ -130,6 +134,7 @@ async def run_call(
     call_deadline = time.monotonic() + cap if cap > 0 else float("inf")
 
     try:
+        silent_attempts = 0
         while question is not None:
             turn_no += 1
             is_final = question.id == FINAL_QUESTION_ID
@@ -143,8 +148,15 @@ async def run_call(
                 )
                 _log_assessment(dialogue.assess_risk())
                 raise CallEnded("max call duration reached")
-            await speak(websocket, question.text, session, speaker, tx_codec)
+            await speak(
+                websocket, question.text, session, speaker, tx_codec,
+                what=f"question {turn_no} ({question.id})",
+            )
             if is_final:
+                # The question promises "speak clearly after the beep", so the
+                # beep has to exist -- and it is played BEFORE the capture
+                # window opens, so the patient hears the cue and then starts.
+                await beep(websocket, session, speaker, tx_codec, settings)
                 # Final open question: fixed window instead of the silence
                 # detector. Patients ramble and think mid-sentence, and the
                 # question itself tells them to hang up when done -- so we
@@ -156,17 +168,42 @@ async def run_call(
                 pcm, had_speech = await capture_turn(inbox, session, settings)
 
             if not had_speech and not is_final and not session.stop_received:
-                # One polite repeat before moving on (still one question at a time).
-                logger.info("turn=%d: no speech detected, repeating question=%s",
-                            turn_no, question.id)
-                await speak(
-                    websocket,
-                    f"Sorry, I did not hear that. {question.text}",
-                    session,
-                    speaker,
-                    tx_codec,
-                )
-                pcm, had_speech = await capture_turn(inbox, session, settings)
+                # One polite repeat, then stop. If they still cannot be heard,
+                # do NOT keep walking down the script -- live bug, 2 Oct 2026: a
+                # patient we could not hear was getting medication -> pain ->
+                # category -> final in a few seconds. Close the call politely
+                # instead, counting every SILENT CAPTURE (the repeat counts
+                # too, otherwise the cap could never be reached).
+                max_attempts = max(1, settings.max_silent_attempts)
+                silent_attempts += 1
+                if silent_attempts < max_attempts:
+                    logger.info("turn=%d: no speech detected, repeating question=%s",
+                                turn_no, question.id)
+                    await speak(
+                        websocket,
+                        f"Sorry, I did not hear that. {question.text}",
+                        session,
+                        speaker,
+                        tx_codec,
+                        what="the repeated question",
+                    )
+                    pcm, had_speech = await capture_turn(inbox, session, settings)
+                    if not had_speech:
+                        silent_attempts += 1
+                if silent_attempts >= max_attempts:
+                    logger.warning(
+                        "No patient speech after %d attempt(s) on %s (frames=%d) "
+                        "-- closing politely instead of asking the rest of the "
+                        "script",
+                        silent_attempts, question.id, session.media_frames,
+                    )
+                    await speak(
+                        websocket, NO_SPEECH_CLOSING_TEXT, session, speaker,
+                        tx_codec, what="the no-audio goodbye",
+                    )
+                    raise CallEnded(
+                        f"no patient audio after {silent_attempts} attempts"
+                    )
 
             if not had_speech and session.stop_received:
                 # Patient hung up without answering this turn. Earlier answers
@@ -176,18 +213,37 @@ async def run_call(
                 raise CallEnded("call ended by patient mid-turn")
 
             transcript = ""
+            leg_died: CallEnded | None = None
             if had_speech:
+                silent_attempts = 0
                 if settings.filler_enabled:
-                    # Instant filler while STT runs (README section 4). Off by
-                    # default: with the base model STT takes <1 s, so it would
-                    # just delay the next question.
-                    await send_pcm(
-                        websocket, speaker.filler(), tx_codec, session, pace=False
-                    )
+                    # Instant filler while STT runs (README section 4). On by
+                    # default: live testing showed the patient sitting in dead
+                    # air for a second or two after answering, which reads as
+                    # "did it hear me?" -- so we cover the gap with a voice.
+                    #
+                    # A dead leg must NOT cost us the answer we already have
+                    # (live 2 Oct 2026: ~11 s of a patient's final answer --
+                    # "severe headache" -- was captured, then thrown away
+                    # because the provider closed the leg while we were saying
+                    # "One moment, please."). The filler is a courtesy; the
+                    # transcript is the product. Transcribe and record first,
+                    # then end the call.
+                    try:
+                        await send_pcm(
+                            websocket, speaker.filler(), tx_codec, session,
+                            pace=False, what="the filler",
+                        )
+                    except CallEnded as exc:
+                        leg_died = exc
+                        logger.warning(
+                            "Leg closed while sending the filler (turn=%d) -- "
+                            "keeping the captured answer", turn_no,
+                        )
                 transcript = await _transcribe_turn(
                     pcm, turn_no, question.id, turn_dir, transcriber
                 )
-                if session.stop_received:
+                if session.stop_received and leg_died is None:
                     # Patient hung up while/after answering: keep the captured
                     # data, then stop the call instead of asking the next question.
                     dialogue.record_answer(transcript)
@@ -220,15 +276,31 @@ async def run_call(
                 turn_no, assessment.risk_level, assessment.score,
             )
 
+            if leg_died is not None:
+                # The answer is transcribed, recorded and scored (and the row +
+                # alert are about to be persisted by the CallEnded handler) --
+                # only now do we stop talking.
+                raise leg_died
+
             # Step 5 TC2: the risk level changes the next spoken response --
             # a red-flag answer is acknowledged once, before the next question
             # (and the closing becomes urgent, see dialogue.closing_text).
             ack = dialogue.pop_urgent_acknowledgment()
             if question is not None and ack:
-                await speak(websocket, ack, session, speaker, tx_codec)
+                await speak(
+                    websocket, ack, session, speaker, tx_codec,
+                    what="the urgent acknowledgment",
+                )
 
+        closing_reason = "dialogue finished"
         if not session.stop_received:
-            await speak(websocket, dialogue.closing_text, session, speaker, tx_codec)
+            await speak(
+                websocket, dialogue.closing_text, session, speaker, tx_codec,
+                what="the closing line",
+            )
+            # Say nothing more: the patient ends their own call. We only take
+            # the line back if they are still on it after HANGUP_GRACE_SEC.
+            closing_reason = f"dialogue finished -- {await wait_for_hangup(session, settings)}"
 
         # Step 4: run the NLP engine + risk scorer over the full conversation.
         assessment = dialogue.assess_risk()
@@ -244,9 +316,9 @@ async def run_call(
         for entry in dialogue.summary():
             logger.info("  %s = %r (interpretation=%r)",
                         entry["question_id"], entry["transcript"], entry["interpretation"])
-        raise CallEnded("dialogue finished")
+        raise CallEnded(closing_reason)
     except CallEnded as exc:
-        # Step 6 + 7: persist the row and (high risk) send the WhatsApp alert
+        # Step 6 + 7: persist the row and prepare the HIGH-risk alert message
         # on EVERY exit path -- normal finish, hangup, max-duration cap.
         await _persist_and_alert(
             dialogue, assessment=None, reason=str(exc), session=session,
@@ -347,7 +419,8 @@ async def _drain_until_closed(inbox: asyncio.Queue) -> None:
 
 
 async def speak(
-    websocket, text: str, session, speaker, tx_codec: str | None = None
+    websocket, text: str, session, speaker, tx_codec: str | None = None,
+    what: str = "a question",
 ) -> None:
     """Synthesize and stream a sentence to the call at real-time pace."""
     codec = tx_codec or session.encoding
@@ -359,11 +432,51 @@ async def speak(
         codec,
         text if len(text) <= 60 else text[:57] + "...",
     )
-    await send_pcm(websocket, pcm, codec, session, pace=True)
+    await send_pcm(websocket, pcm, codec, session, pace=True, what=what)
+
+
+#: Said when we still cannot hear the patient after MAX_SILENT_ATTEMPTS
+#: attempts at one question. Closing politely beats walking them down the rest
+#: of the script while they are clearly not there (live bug, 2 Oct 2026).
+NO_SPEECH_CLOSING_TEXT = (
+    "Sorry, I cannot hear you. I will end this call now. Goodbye."
+)
+
+
+async def beep(
+    websocket, session, speaker, tx_codec: str | None = None,
+    settings: Settings | None = None,
+) -> bool:
+    """Play the "speak now" tone that the final question promises.
+
+    Two short 1 kHz beeps with a gap, faded at both ends. Goes through
+    `send_pcm`, so it is paced like speech, marks the session as speaking (the
+    echo of our own tone is discarded), lands in agent_audio.wav for offline
+    diagnosis, and aborts cleanly if the patient hangs up mid-tone.
+
+    Returns True if a tone was actually sent.
+    """
+    settings = settings or get_settings()
+    if not settings.beep_enabled or settings.beep_duration_ms <= 0:
+        return False
+    codec = tx_codec or session.encoding
+    pcm = recordings_service.beep_pcm16(
+        frequency_hz=settings.beep_frequency_hz,
+        duration_ms=settings.beep_duration_ms,
+    )
+    if not pcm:
+        return False
+    logger.info(
+        "Playing %.0f Hz beep (%.2fs of audio) -- the patient's cue to speak",
+        settings.beep_frequency_hz, len(pcm) / 2 / 8000,
+    )
+    await send_pcm(websocket, pcm, codec, session, pace=True, what="the beep")
+    return True
 
 
 async def send_pcm(
-    websocket, pcm16: bytes, encoding: str, session, pace: bool = True
+    websocket, pcm16: bytes, encoding: str, session, pace: bool = True,
+    what: str = "audio",
 ) -> None:
     """Send PCM16 audio back to the provider as base64 media frames.
 
@@ -372,7 +485,11 @@ async def send_pcm(
     of drifting slower and slower (drift stretches the audio -- a second
     contributor to the 'underwater' sound heard live).
 
-    Aborts promptly with CallEnded if the patient hangs up mid-sentence.
+    Aborts promptly with CallEnded if the patient hangs up mid-sentence. `what`
+    names the audio so `ended_reason` says where the leg died ("stream closed
+    while speaking the final question" vs "... while playing the beep") --
+    without it, a call that dies 1 s after the last question is undiagnosable
+    from the database alone.
     """
     if len(pcm16) % 2:  # codec helpers require whole 16-bit frames
         pcm16 = pcm16[:-1]
@@ -382,7 +499,7 @@ async def send_pcm(
     try:
         for offset in range(0, len(pcm16), _PCM_BYTES_PER_20MS):
             if session.ended:
-                raise CallEnded("stream closed while speaking")
+                raise CallEnded(f"stream closed while playing {what}")
             piece = pcm16[offset:offset + _PCM_BYTES_PER_20MS]
             compressed = recordings_service.pcm16_to_codec(piece, encoding)
             # Keep a copy of exactly what we transmitted so a bad-sounding call
@@ -397,7 +514,9 @@ async def send_pcm(
                 })
             except (WebSocketDisconnect, RuntimeError) as exc:
                 # A dead socket can surface as either; both mean hangup.
-                raise CallEnded(f"stream closed while speaking: {exc}") from exc
+                raise CallEnded(
+                    f"stream closed while playing {what}: {exc}"
+                ) from exc
             frame += 1
             if pace:
                 delay = started + frame * _SEND_FRAME_SECONDS - time.monotonic()
@@ -422,6 +541,8 @@ async def capture_turn(
     ))
     pcm = bytearray()
     last_frame = time.monotonic()
+    started = last_frame
+    frames = 0
 
     while True:
         remaining_gap = settings.turn_gap_sec - (time.monotonic() - last_frame)
@@ -442,12 +563,39 @@ async def capture_turn(
         if session.speaking:
             continue  # our own voice; not patient audio
 
+        frames += 1
         pcm.extend(recordings_service.decode_chunk(session.encoding, item))
         state = detector.feed(bytes(pcm[-_PCM_BYTES_PER_20MS * 2:]))
         if state == "ended":
             break
 
+    _log_capture_window("turn", started, frames, len(pcm), detector.has_speech)
     return bytes(pcm), detector.has_speech
+
+
+def _log_capture_window(
+    what: str, started: float, frames: int, pcm_bytes: int, had_speech: bool
+) -> None:
+    """Say how much audio a capture window ACTUALLY collected.
+
+    Live 4 Oct 2026: three of five answers were empty and the log only ever
+    said "no speech detected", which reads as "the patient did not answer" --
+    the one conclusion the evidence did not support. A window that stayed open
+    for seconds and received (almost) no frames is a transport failure, and it
+    now says so at WARNING level.
+    """
+    window = time.monotonic() - started
+    audio_sec = pcm_bytes / 2 / 8000
+    logger.info(
+        "Capture window (%s): %.1fs open, %d frames, %.1fs of audio, speech=%s",
+        what, window, frames, audio_sec, had_speech,
+    )
+    if window >= _DEAD_WINDOW_SEC and audio_sec < _DEAD_WINDOW_AUDIO_SEC:
+        logger.warning(
+            "Capture window (%s) was open %.1fs but received %.1fs of audio -- "
+            "the media leg is not delivering speech right now.",
+            what, window, audio_sec,
+        )
 
 
 
@@ -461,18 +609,47 @@ async def capture_final_answer(
     call is closed after the window either way.
     """
     deadline = time.monotonic() + settings.final_answer_sec
+    # The patient needs room to think before they start. Live 4 Oct 2026: the
+    # window used to end after TURN_GAP_SEC (2.5 s) of no frames, so the bot
+    # started talking again while the patient was still formulating their
+    # answer -- on the very question that carries free-text symptoms, and the
+    # one they are slowest to answer.
+    #
+    # Two rules now:
+    #   - before ANY sound: give up after final_answer_patience_sec (a patient
+    #     who is not going to answer should not hold a billed line open for a
+    #     whole minute);
+    #   - after ANY sound: silence NEVER ends the window early. They may pause
+    #     mid-sentence; we only stop at the full final_answer_sec.
+    first_sound_deadline = time.monotonic() + min(
+        settings.final_answer_patience_sec, settings.final_answer_sec
+    )
     pcm = bytearray()
     last_frame = time.monotonic()
+    started = last_frame
     had_speech = False
+    frames = 0
 
     while time.monotonic() < deadline:
-        remaining_gap = settings.turn_gap_sec - (time.monotonic() - last_frame)
+        if session.ended:
+            break
+        now = time.monotonic()
+        if not had_speech and now >= first_sound_deadline:
+            logger.info(
+                "Final answer: nothing heard in %.0fs -- closing the window",
+                settings.final_answer_patience_sec,
+            )
+            break
+        remaining = deadline - now
+        remaining_gap = settings.turn_gap_sec - (now - last_frame)
         try:
             kind, item = await asyncio.wait_for(
-                inbox.get(), timeout=max(0.05, remaining_gap)
+                inbox.get(), timeout=max(0.05, min(remaining, remaining_gap))
             )
         except asyncio.TimeoutError:
-            break
+            # Silence: keep waiting (see the rules above). Only the two
+            # deadlines above, or the stream ending, can close this window.
+            continue
 
         last_frame = time.monotonic()
         if kind == "closed":
@@ -482,9 +659,40 @@ async def capture_final_answer(
         if session.speaking:
             continue  # our own voice; not patient audio
 
+        frames += 1
         chunk = recordings_service.decode_chunk(session.encoding, item)
         if chunk:
             pcm.extend(chunk)
             had_speech = True
 
+    _log_capture_window("final answer", started, frames, len(pcm), had_speech)
     return bytes(pcm), had_speech
+
+
+async def wait_for_hangup(session, settings: Settings) -> str:
+    """After the goodbye: say nothing, and let the patient end the call.
+
+    The closing line used to end the call on the spot, and it also told the
+    patient to phone the hospital -- advice the care team owns, and on a
+    post-discharge follow-up it is actively wrong (they have already called).
+    The patient now hangs up in their own time; if they are still connected
+    HANGUP_GRACE_SEC after the goodbye we hang up for them, because the line is
+    billed either way and holding it open serves nobody.
+
+    Returns a short phrase for the log / `ended_reason`.
+    """
+    grace = max(0.0, settings.hangup_grace_sec)
+    if grace <= 0:
+        return "closed immediately after the closing line"
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if session.stop_received or session.ended:
+            waited = grace - (deadline - time.monotonic())
+            logger.info("Patient ended the call themselves after %.1fs", waited)
+            return f"patient hung up {waited:.0f}s after the closing line"
+        await asyncio.sleep(0.25)
+    logger.info(
+        "Patient still connected %.0fs after the goodbye -- hanging up for them",
+        grace,
+    )
+    return f"auto-disconnected {grace:.0f}s after the closing line"

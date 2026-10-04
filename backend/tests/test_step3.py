@@ -515,7 +515,7 @@ def test_speaker_bandpass_toggle_and_config_defaults():
     settings = get_settings()
     assert settings.tts_bandpass_enabled is True
     assert settings.speak_codec.lower() == "pcmu"  # provider's bidirectional codec
-    assert settings.filler_enabled is False        # STT is fast enough without it
+    assert settings.filler_enabled is True         # covers the STT/TTS gap
 
     try:
         plain = Speaker(backend="pyttsx3", bandpass=False)
@@ -661,10 +661,56 @@ def test_audio_settings_defaults_are_the_fixed_ones():
     settings = Settings(_env_file=None)
     assert settings.speak_codec == "pcmu"        # provider's bidirectional codec
     assert settings.tts_bandpass_enabled is True
-    assert settings.filler_enabled is False      # STT is faster than the filler
+    # 2 Oct 2026: filler flipped ON. Live calls left the patient in dead air
+    # for ~1-2 s after answering ("did it hear me?"), and covering that gap
+    # with a voice is worth more than the ~1 s the filler itself takes.
+    assert settings.filler_enabled is True
+    assert settings.max_silent_attempts == 2      # never fire the whole script
+    assert settings.beep_enabled is True           # the question promises it
+    assert settings.beep_frequency_hz == 1000.0
+    assert settings.beep_duration_ms == 350.0
+    # Alerts are SENT by default; 'ready' is the store-only fallback.
+    assert Settings.model_fields["alert_delivery"].default == "whatsapp"
     # The conftest fixture pins TTS_BACKEND for determinism, so check the model
     # default itself rather than the ambient value.
     assert Settings.model_fields["tts_backend"].default == "auto"
     assert Settings.model_fields["tts_rate"].default == 160  # slower = clearer
 
 
+
+
+def _tone(seconds: float, freq: float = 440.0, amp: int = 8000) -> bytes:
+    import struct as _struct
+    n = int(seconds * 8000)
+    return b"".join(
+        _struct.pack("<h", int(amp * math.sin(2 * math.pi * freq * i / 8000)))
+        for i in range(n)
+    )
+
+
+def test_trim_silence_removes_dead_air_but_keeps_the_speech():
+    """SAPI pads the filler with ~130 ms of lead-in and ~940 ms of tail, so the
+    patient sat through a second of nothing after 'please' (live 4 Oct 2026)."""
+    from app.services.tts import trim_silence
+
+    padded = b"\x00\x00" * int(0.2 * 8000) + _tone(1.0) + b"\x00\x00" * int(0.5 * 8000)
+    trimmed = trim_silence(padded)
+
+    assert len(trimmed) < len(padded) - int(0.4 * 8000 * 2)
+    # The speech itself survives: energy is still there and the tone is intact.
+    assert max(abs(v) for v in struct.unpack(f"<{len(trimmed)//2}h", trimmed)) > 5000
+    assert len(trimmed) >= int(0.9 * 8000 * 2)
+
+
+def test_filler_text_has_no_comma():
+    """The comma is what SAPI stretches into a 0.63 s pause before 'please'."""
+    from app.services.tts import FILLER_TEXT
+
+    assert "," not in FILLER_TEXT
+    assert FILLER_TEXT.strip().lower().endswith("please.")
+
+
+def test_trim_silence_keeps_digital_silence_usable():
+    from app.services.tts import trim_silence
+
+    assert trim_silence(b"\x00\x00" * 4000)  # never returns empty

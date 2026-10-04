@@ -1,4 +1,4 @@
-# How "severity" and the risk level are calculated in VoiceCare LK
+# How "severity" and the risk level are calculated in VoiceCare
 
 One-page, code-accurate walkthrough of the whole path a call takes, from audio
 to the LOW / MEDIUM / HIGH badge on the dashboard. Everything below is

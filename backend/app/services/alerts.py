@@ -116,20 +116,64 @@ def format_alert_message(record, patient=None) -> str:
     return "\n".join(lines)
 
 
+def format_alert_brief(record, patient=None) -> str:
+    """Phone-sized version of the alert -- this is what actually gets sent.
+
+    A WhatsApp/SMS alert has to be readable at a glance on a phone, so it stays
+    to six lines: who, what, when, the key symptoms, the action. The full
+    detail (every answer + transcript + risk reasons) lives on the call row and
+    in the dashboard's call detail, which the last line points at.
+    """
+    findings = record.get_findings() if hasattr(record, "get_findings") else []
+    finished = record.finished_at or record.created_at
+    stamp = finished.strftime("%d %b %H:%M") if finished else "just now"
+
+    lines: list[str] = [
+        "\U0001F6A8 VoiceCare — HIGH RISK",
+        f"{record.patient_code or 'UNKNOWN'}"
+        + (f" · {patient.name}" if patient is not None and patient.name else "")
+        + (f"\n{record.phone_number}" if record.phone_number else "")
+        + f" · {record.diagnosis_category}",
+        f"Check-in {stamp} · score {record.risk_score:.0f}",
+    ]
+    if findings:
+        # Findings come back from the row as JSON dicts (not objects), the same
+        # way format_alert_message reads them.
+        described: list[str] = []
+        for f in findings[:3]:
+            label = f.get("label", f.get("id", "symptom"))
+            severity = f.get("severity")
+            grade = f" ({severity})" if severity else ""
+            flag = " [RED FLAG]" if f.get("red_flag") else ""
+            described.append(f"{label}{grade}{flag}")
+        line = ", ".join(described)
+        if len(findings) > 3:
+            line += f" +{len(findings) - 3} more"
+        lines.append(f"Symptoms: {line}")
+    else:
+        lines.append("Symptoms: none recorded — escalated on risk score")
+    lines.append("Call them back now. Full transcript: dashboard → Calls.")
+    return "\n".join(lines)
+
+
 def send_whatsapp_alert(
     message: str,
     settings: Settings | None = None,
 ) -> str:
-    """Send one WhatsApp text through the sandbox conversation.
+    """Send one WhatsApp text through the conversation.
 
     Returns the provider message id. Raises AlertError on failure.
+
+    The conversation itself is opened by the operator with `get-info.py`
+    (a Zernio *template* message starts the thread and re-opens it after the
+    24-hour window closes); this function only posts into an open one.
     """
     settings = settings or get_settings()
     if not settings.alerts_enabled:
         raise AlertError("ALERTS_ENABLED is false -- alerts are switched off")
     if not settings.alert_conversation_id or not settings.inbox_account_id:
         raise AlertError(
-            "Sandbox WhatsApp is not configured (set ZERNIO_ALERT_CONVERSATION_ID "
+            "WhatsApp is not configured (set ZERNIO_ALERT_CONVERSATION_ID "
             "and ZERNIO_INBOX_ACCOUNT_ID in backend/.env)"
         )
     if not settings.zernio_api_key:
@@ -158,8 +202,23 @@ def send_whatsapp_alert(
     if response.status_code >= 400:
         raise AlertError(
             f"Zernio rejected the WhatsApp alert (HTTP {response.status_code}): {body}"
+            + (
+                " -- the conversation may have closed; re-open it with "
+                "`python get-info.py` and update ZERNIO_ALERT_CONVERSATION_ID"
+                if response.status_code in (400, 404, 410) else ""
+            )
         )
-    message_id = body.get("id") or body.get("messageId") or "unknown"
+    # Zernio answers {"success": true, "data": {"messageId": ...}} (see
+    # get-info.py), so the id lives one level down -- reading only the top
+    # level made every send log id="unknown".
+    data = body.get("data") if isinstance(body, dict) else None
+    payload = data if isinstance(data, dict) else body
+    message_id = (
+        payload.get("id")
+        or payload.get("messageId")
+        or (body.get("messageId") if isinstance(body, dict) else None)
+        or "unknown"
+    )
     logger.info("WhatsApp alert delivered: id=%s", message_id)
     return str(message_id)
 
@@ -199,7 +258,8 @@ def prepare_alert(
         )
         return AlertOutcome(STATUS_SKIPPED, f"risk={record.risk_level}")
 
-    message = format_alert_message(record, patient)
+    message = format_alert_message(record, patient)   # full detail -> the row
+    # ...and a phone-sized version is what actually goes out (format_alert_brief).
 
     if delivery_mode(settings) == DELIVERY_READY:
         logger.info(
@@ -226,7 +286,9 @@ def prepare_alert(
         )
 
     try:
-        message_id = send_whatsapp_alert(message, settings)
+        message_id = send_whatsapp_alert(
+            format_alert_brief(record, patient), settings
+        )
     except AlertError as exc:
         logger.error("WhatsApp alert FAILED for record id=%s: %s", record.id, exc)
         return AlertOutcome(f"failed: {exc}", str(exc), message)

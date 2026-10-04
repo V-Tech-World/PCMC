@@ -1,4 +1,4 @@
-# VoiceCare LK -- backend (Step 2: batch transcription proof)
+# VoiceCare -- backend (Step 2: batch transcription proof)
 
 **Previous step:** see `step-1-readme.md` (telephony connectivity --
 verified live: call placed, audio streamed, WAV saved).

@@ -114,3 +114,8 @@ collected.txt
 testmap.txt
 backend/collected.txt
 backend/testmap.txt
+
+# Runtime logs. Rotate 2 MB x 5 in backend/logs/voicecare.log -- can contain
+# transcripts of patient speech, so never commit (same rule as recordings/).
+backend/logs/
+logs/

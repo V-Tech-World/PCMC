@@ -1,6 +1,6 @@
 # Step 4 -- NLP + Risk Scoring (Offline) -- COMPLETE
 
-Step 4 of the VoiceCare LK backend: an **offline, rule-based NLP engine** that
+Step 4 of the VoiceCare backend: an **offline, rule-based NLP engine** that
 extracts symptoms from call transcripts and scores each conversation as
 **low / medium / high risk**. No cloud APIs, no heavy dependencies, no model
 downloads -- pure deterministic rules that a clinician can read and audit.
@@ -144,7 +144,8 @@ Manual re-test recipe for the severe case:
    `Risk assessment: level=high score=...` plus reason lines such as
    `RED FLAG: bleeding`, `medication not taken as prescribed (+2)`.
 3. Check the call row / dashboard call detail shows `HIGH` with those reasons,
-   and that a WhatsApp alert is attempted (alerts are HIGH only, Step 7).
+   and that an alert message is prepared for the HIGH-risk call (alerts are
+   HIGH only, Step 7).
 
 ## Deliberate design decisions
 

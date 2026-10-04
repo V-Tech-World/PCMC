@@ -1,4 +1,4 @@
-# VoiceCare LK -- Live-Call Test Plan (all steps, minimum cost)
+# VoiceCare -- Live-Call Test Plan (all steps, minimum cost)
 
 One checklist for the **whole app**, tested against real Zernio calls.
 Every "phone" entry below means **one dialed call = one billed minute**, so
@@ -13,7 +13,7 @@ already proves the logic. A live call only proves the provider integration.
 | # | Do | Expected |
 |---|----|----------|
 | 0.1 | `cp backend/.env.example backend/.env`, fill `ZERNIO_API_KEY`, `FROM_NUMBER` (toll-free), `CALLS_API_KEY`, run `ngrok http 8000`, set `PUBLIC_WSS_URL=wss://<host>/media-stream` | `GET /health` returns 200 and shows masked keys |
-| 0.2 | **Alerts (29 Sep rework):** leave `ALERT_DELIVERY=ready` (default) -- the alert text is built, stored on the call row and shown in the dashboard call detail with a Copy button; nothing is sent. Only fill `ZERNIO_INBOX_ACCOUNT_ID` / `ZERNIO_ALERT_CONVERSATION_ID` (sandbox thread with **+1 202 908 7457**) if you set `ALERT_DELIVERY=whatsapp` | startup log shows the alert mode; a HIGH call logs `Alert for record N: status=ready ... -- N-char message stored` |
+| 0.2 | **Alerts:** `.env` is already set to `ALERT_DELIVERY=whatsapp` with your care-team conversation. A HIGH-risk call posts the **short** alert (6 lines) into that WhatsApp thread and the full text lands on the call row. If a send fails because the 24-hour window closed: `cd backend && python get-info.py` -> paste the new `conversationId` into `.env` -> restart | startup log: `Alerts: enabled (delivery=whatsapp, conversation=6aaadf93...)`; a HIGH call logs `WhatsApp alert delivered: id=wamid...` and the row shows `alert_status=sent (wamid...)` |
 | 0.3 | Seed one test patient (use YOUR phone so real calls reach you): `POST /records/patients` header `X-Api-Key`, body `{"patient_code":"P-TEST","name":"Test Patient","phone_number":"+94...","diagnosis_category":"cardiac"}`. Valid types: `general`, `surgical`, `cardiac`, `respiratory`, `diabetic`. You can also create it from the dashboard **Patients** page (and correct it later with **Edit**) | 201 created; `GET /records/patients` lists it |
 | 0.4 | Start backend: `backend/.venv/Scripts/python -m uvicorn app.main:app --port 8000` | log shows DB line + no warnings |
 
@@ -58,9 +58,12 @@ question).** Dial with the patient: `POST /calls` `{"patient_code":"P-TEST"}`.
 | Running risk logged | logs show `Running risk after turn=3: level=high` |
 | Severity from lay wording (29 Sep fix) | logs show `Choice answer 'it is very bad' read as 'severe' by the NLP severity fallback` |
 | Urgent closing | final goodbye is the urgent variant, not the neutral one |
-| Final open question (60 s window) | you can pause mid-sentence without being cut off; call closes after the window even if you never hang up |
-| DB row | `risk_level=high`, red-flag finding stored, `alert_status=ready` and `alert_message` holding the full alert text |
-| **Alert message in the dashboard** | open the row in the dashboard (Calls tab), amber panel "Alert message (ready to send)" with the patient code, HIGH, chest pain and every answer/transcript; **Copy** puts it on the clipboard (nothing was sent anywhere) |
+| Final open question (60 s window) | you can pause mid-sentence without being cut off; call closes after the window even if you never hang up. **You hear two short beeps, then you speak** -- that is the cue the question names |
+| Dead air after answering (2 Oct fix) | after each answer you hear "One moment, please." instead of a 1-2 s silence, then the next question |
+| Silent patient (2 Oct fix) | answer nothing at all (mute / walk away) | it asks once, repeats once, then says "Sorry, I cannot hear you..." and ends -- it must NOT fire the whole script at you |
+| DB row | `risk_level=high`, red-flag finding stored, `alert_status=sent (wamid...)` and `alert_message` holding the full alert text |
+| **WhatsApp arrives** | your care-team WhatsApp gets the **6-line** alert (patient code, HIGH, score, key symptoms with [RED FLAG], "call them back now") -- not the 20-line full version |
+| **Alert message in the dashboard** | open the row in the dashboard (Calls tab), amber panel "Alert message (ready to send)" with the patient code, HIGH, chest pain and every answer/transcript; **Copy** still works when delivery is off |
 
 **Call C-2 (optional, same call if you want to combine):** answer medication
 "yes", pain "yes" and then give an ungradeable severity ("it comes and goes").
@@ -93,9 +96,9 @@ optional duration-cap call.)
 | Test | Do | Expected |
 |------|----|----------|
 | Low risk = silent (TC2) | covered by Call B | its row shows `alert_status=skipped` and an empty `alert_message` |
-| Alert content (TC3) | read the stored `alert_message` (dashboard Copy, or `GET /records/calls/{id}`) | contains patient code, name/phone, risk level + score, key symptoms with severity, every answer + transcript, call id |
-| Delivery switch | set `ALERT_DELIVERY=whatsapp` + the sandbox ids, restart, make a HIGH call | `alert_status=sent (<id>)` and the sandbox WhatsApp receives the same text; back on `ready` the status is `ready` and nothing is sent |
-| Alert failure handling | keep `ALERT_DELIVERY=whatsapp` and set `ZERNIO_ALERT_CONVERSATION_ID` empty, trigger a high call | row shows `alert_status=not_configured` **and still stores the message**; call completes; reason in logs |
+| Alert content (TC3) | read the stored `alert_message` (dashboard Copy, or `GET /records/calls/{id}`) | contains patient code, name/phone, risk level + score, key symptoms with severity, every answer + transcript, call id. The **WhatsApp** copy is the 6-line `format_alert_brief` |
+| Delivery switch | set `ALERT_DELIVERY=ready` (or blank the conversation ids), restart, make a HIGH call | row shows `alert_status=ready` and nothing is sent; switch back to `whatsapp` to resume |
+| Closed 24h window | leave the conversation id stale, make a HIGH call | row shows `alert_status=failed: ...` + "re-open it with `python get-info.py`"; **the message is still stored**, and the call is unaffected |
 | Unknown mode | set `ALERT_DELIVERY=carrier-pigeon`, restart, trigger a high call | warning in logs, falls back to `ready` (never sends) |
 
 ## 6. Full restart durability -- 0 calls
@@ -117,6 +120,7 @@ the frontend running (`cd frontend && npm run dev` -> http://localhost:5173).
 | TC2 -- risk colours (0 calls) | Calls tab, click through the filter chips | High = red badge, Medium = amber, Low = green; "Open alerts" = unreviewed high-risk rows; clicking a row expands transcript + risk reasons, and a HIGH row also shows the prepared alert message with Copy |
 | Dark mode (0 calls) | Toggle the theme (top bar) and walk every screen, expanding a call row and opening the patient form | No light-mode leftovers: the expanded call row, the risk/symptom panels, the alert chip, the schedule/status pills and the patient status pills all stay dark; the login card stays light on purpose |
 | Edit a patient (0 calls) | As admin: Patients tab -> **Edit** on the test patient -> change the phone number and the discharge type -> Save; then log in as nurse and try to edit | Form comes back pre-filled with the code read-only, toast says "updated", the row shows the new values and no duplicate exists. Nurse: no Edit button (and a direct POST is refused with 403) |
+| Re-send an alert (0 calls) | Open the Oct-2 HIGH row that still says "Ready to send" -> click **Send now** | Chip flips to **Sent** with the `wamid...` id, the care team's WhatsApp gets the 6-line alert, and the full message stays on the row. On a LOW/MEDIUM row the button is not shown (and a direct POST returns 409) |
 | TC4 -- responsive (0 calls) | Shrink the window below 1024px (or dev-tools mobile view) | Sidebar becomes a hamburger drawer; cards reflow 3 -> 2 -> 1; tables scroll sideways |
 | TC3 -- Call Now (**this IS Call B**) | Patients tab -> "Call now" on the test patient -> read the confirm dialog -> confirm | Dialog names the number and warns about billing; the phone rings, the dialogue runs, a row appears with its risk colour, low risk -> no alert at all. **Do not also fire Call B via curl** -- same call, placed from the dashboard instead |
 | Scheduler switch (0 calls) | Schedule tab: flip the switch ON, read the danger confirm, confirm, then flip it straight back OFF | Banner + "Auto-dial active/inactive" label follow the switch; toast says it is saved. **Do not leave it ON** during the rest of the demo; toggling itself never places a call |
@@ -144,10 +148,16 @@ offline suite.
 ## After each call: 30-second verification recipe
 
 1. `GET /records/calls?limit=3` (with `X-Api-Key`) -- check the newest row's
-   risk_level, answers count, ended_reason, alert_status **and alert_message**
-   (a HIGH call should carry the full alert text even though nothing was sent).
-2. Backend logs -- `Risk assessment: level=...`, `Call persisted: id=...`,
-   `Alert for record N: status=ready ... -- N-char message stored` (or the
-   `sent (<id>)` / `skipped` line).
+   risk_level, answers count, **ended_reason**, alert_status and
+   alert_message (a HIGH call should carry the full alert text; the WhatsApp
+   copy is the 6-line brief).
+   - `ended_reason = "stream closed while playing <what>"` -> the provider
+     dropped the leg at that point (`<what>` names question N, the beep, the
+     closing...). `GET /calls/<provider_call_id>/status` shows the provider's
+     own view of the same call; if it keeps dying at the same duration, it is
+     a Zernio leg limit, not us.
+2. `backend/logs/voicecare.log` (written by every run, rotating) -- the exact
+   `stop` event / disconnect, the risk reasons and the alert outcome survive
+   after the terminal is closed.
 3. Dashboard: open the row -- badge, "Why this risk level", symptoms, and the
-   alert message you can Copy.
+   alert message you can Copy or re-send.

@@ -1,4 +1,4 @@
-# VoiceCare LK backend -- runtime dependencies
+# VoiceCare backend -- runtime dependencies
 # (Steps 1-2: telephony + batch transcription)
 
 # -- web framework --

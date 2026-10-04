@@ -1,4 +1,4 @@
-# VoiceCare LK
+# VoiceCare
 
 A phone-call-based monitoring system for discharged hospital patients in Sri Lanka.
 Patients get a phone call, answer a short set of structured health questions by
@@ -53,7 +53,8 @@ architecture).
  Database (SQLite + SQLModel: call logs, transcripts, risk levels)
        |
        v
- Alert service (SMS/email to on-call staff, only for medium/high risk)
+ Alert service (HIGH risk only: the alert text is built and stored on the call
+  row for the care team; delivering it -- SMS/email/WhatsApp -- is optional)
        |
        v
  Clinical dashboard (React + Tailwind) -- staff review calls, transcripts,
@@ -83,7 +84,7 @@ next, piece by piece.
 | Text-to-Speech | Turns the system's response into spoken audio | TBD -- candidates: gTTS (quick/free), AI4Bharat Indic-TTS (Tamil) |
 | Scheduler | Decides which patients are due for a call today, triggers it | APScheduler (in-process) |
 | Database | Stores patients, calls, transcripts, symptoms, risk, alerts | SQLite via SQLModel |
-| Alert service | Notifies staff of medium/high risk cases | SMS/email, triggered from backend on risk threshold |
+| Alert service | Prepares the alert for HIGH-risk cases and hands it to the care team | Message stored on the call row + shown (Copy) in the dashboard; optional transport (`ALERT_DELIVERY=whatsapp`) |
 | Clinical dashboard | Staff view calls, transcripts, risk, system decision, manual dial | React + Tailwind CSS |
 | Containerization | One-command local demo setup | Docker (added once core pipeline works; SQLite file mounted as a volume, not baked into the image) |
 
@@ -167,7 +168,10 @@ patients: id, patient_code (anonymized), phone_number, language_pref,
 calls: id, patient_id, timestamp, transcript, extracted_symptoms (json),
        risk_level, reviewed (bool)
 
-alerts: id, call_id, sent_at, channel (sms/email), acknowledged (bool)
+alerts: (stored on the call row, not a separate table)
+        alert_status (skipped|ready|sent|failed|not_configured),
+        alert_detail (why), alert_message (the prepared text),
+        acknowledged ~ the existing `reviewed` / `closed_by` columns
 ```
 
 ---
@@ -193,8 +197,8 @@ React + Tailwind CSS, talks to the backend over a normal REST API -- no
 real-time/voice complexity on this side, it's a standard CRUD-style dashboard.
 
 **Design system (from initial mockups):**
-- Primary color: green (brand color, matches "VoiceCare LK" identity), white cards, soft rounded corners
-- Login screen: centered white card on a green gradient background, role tabs (Doctor/Nurse/Admin), hospital selector, employee ID + password
+- Primary color: modern blue (brand color, matches the "VoiceCare" identity), white cards, soft rounded corners
+- Login screen: centered white card on a blue gradient background, role tabs (Doctor/Nurse/Admin), hospital selector, employee ID + password
 - Dashboard shell: dark sidebar for navigation (with logout pinned at the bottom), light content area, profile icon top-right
 - Must be responsive -- sidebar collapses on mobile, card grid reflows to single column
 
@@ -238,7 +242,7 @@ backend/
 |-- dialogue.py                # question flow / conversation state machine
 |-- tts.py                      # text -> speech audio
 |-- db.py                        # SQLModel models and queries
-|-- alerts.py                     # WhatsApp trigger to staff (Zernio sandbox)
+|-- alerts.py                     # prepares/stores the HIGH-risk alert message (optional WhatsApp send)
 |-- scheduler.py                    # decides which patients are due today
 `-- outbound_call.py                  # places calls via Zernio API
 ```
@@ -281,7 +285,7 @@ Status is tracked here so it's always clear where we actually are.
 - [x] TC1: A real answer is transcribed and scored within a few seconds, without dead air
 - [x] TC2: The risk level correctly changes the next spoken response
 - [x] TC3: A full live call completes without the backend crashing
-- [x] Final open question captured in a fixed 60 s window (patient may hang up; call closes either way)
+- [x] Final open question captured in a fixed 60 s window (patient may hang up; call closes either way), and a **beep** cues the patient to start speaking (2 Oct 2026)
 - [x] Cost rails: max call duration per call + internal rate limiting (hourly/daily/concurrent) on POST /calls
 
 See backend/step-5-readme.md for details.
@@ -293,11 +297,11 @@ See backend/step-5-readme.md for details.
 
 See backend/step-6-7-readme.md.
 
-### Step 7 -- Alerts -- COMPLETE (message PREPARED in-dashboard; WhatsApp opt-in)
-- [x] TC1: A high-risk call produces its alert text immediately after the call, stored on the call row and shown (with Copy) in the dashboard call detail
-- [x] TC2: A low/medium-risk call does not produce an alert at all (`alert_status = skipped`)
-- [x] TC3: The alert text includes patient code, risk level, and key symptoms (plus full answers/transcripts)
-- [x] Delivery channel is a config switch: `ALERT_DELIVERY=ready` (default, nothing leaves the backend) or `ALERT_DELIVERY=whatsapp` (the original Zernio sandbox POST, kept for when a real channel is agreed)
+### Step 7 -- Alerts -- COMPLETE (short WhatsApp alert for HIGH risk + full text stored)
+- [x] TC1: A high-risk call alerts the care team's WhatsApp immediately after the call (6-line alert: patient, risk, score, key symptoms, action) and the full detail is stored on the call row + dashboard
+- [x] TC2: A low/medium-risk call does not alert at all (`alert_status = skipped`)
+- [x] TC3: The alert names the patient code, risk level and key symptoms; the stored full message also carries every answer/transcript
+- [x] Delivery is a config switch: `ALERT_DELIVERY=whatsapp` (live) or `ready` (store only, nothing sent); the conversation is opened by the operator with `backend/get-info.py` (24-hour window)
 
 **Full walkthrough of how severity/risk is calculated: `backend/severity-model.md`**
 

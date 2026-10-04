@@ -1,4 +1,4 @@
-# VoiceCare LK -- backend (Step 1: telephony connectivity, rebuilt)
+# VoiceCare -- backend (Step 1: telephony connectivity, rebuilt)
 
 The scratch probes that proved the original telephony leg now live in
 `_archive/`. This is the real implementation following the root README's
@@ -46,7 +46,7 @@ is the committed template documenting every key:
 | `FROM_NUMBER` | Number Zernio dials from |
 | `PUBLIC_WSS_URL` | `wss://<ngrok-domain>/media-stream` |
 | `CALLS_API_KEY` | Long random string; `POST /calls` needs `X-Api-Key: <this>` |
-| `HOSPITAL_NAME` | Spoken in the opening line (default VoiceCare LK) |
+| `HOSPITAL_NAME` | Spoken in the opening line (default VoiceCare) |
 | `GREETING_TEXT` | Optional override of the default opening line |
 | `ALLOWED_CALL_PREFIXES` | E.164 prefixes we may dial (default `+94`) |
 | `MEDIA_STREAM_REQUIRE_TOKEN` | Reject WS connections without a valid token |

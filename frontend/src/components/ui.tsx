@@ -58,7 +58,7 @@ function useCountUp(target: number): number {
   return value;
 }
 
-/** One of the six green cards from the dashboard sketch (with icon +
+/** One of the six brand-blue cards from the dashboard sketch (with icon +
  * count-up + hover lift). */
 export function StatCard({
   label,
@@ -106,7 +106,7 @@ export function Card({
   actions?: ReactNode;
 }) {
   return (
-    <section className="rounded-xl bg-white shadow-sm ring-1 ring-neutral-200 dark:bg-[#1a201d] dark:ring-neutral-700">
+    <section className="rounded-xl bg-white shadow-sm ring-1 ring-neutral-200 dark:bg-[#16203a] dark:ring-neutral-700">
       {(title || actions) && (
         <header className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-700/70">
           <h2 className="text-xs font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
@@ -132,7 +132,7 @@ export function Banner({
     ok: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300",
     error:
       "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/70 dark:text-red-300",
-    info: "border-brand-200 bg-brand-50 text-brand-800 dark:border-brand-700 dark:bg-[#15251c] dark:text-brand-200",
+    info: "border-brand-200 bg-brand-50 text-brand-800 dark:border-brand-700 dark:bg-[#122347] dark:text-brand-200",
   } as const;
   return (
     <div className={`rounded-lg border px-4 py-3 text-sm font-medium ${styles[kind]}`}>

@@ -1,5 +1,5 @@
 """
-Central configuration for the VoiceCare LK backend.
+Central configuration for the VoiceCare backend.
 
 Every setting is read from the single `.env` file in the backend root (one
 env file per component, per the root README section 11), with normal
@@ -14,6 +14,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
@@ -35,7 +36,7 @@ class Settings(BaseSettings):
     public_wss_url: str = ""          # wss://.../media-stream exposed via ngrok
 
     # -- Call script (survey-informed opening, see SURVEY_INSIGHTS.md) ------
-    hospital_name: str = "VoiceCare LK"
+    hospital_name: str = "VoiceCare"
     greeting_text: str = ""           # optional override of the default opening
 
     # -- Guard for the manual "call now" endpoint (POST /calls) -------------
@@ -79,10 +80,12 @@ class Settings(BaseSettings):
                                       # Encoding outbound frames with the inbound
                                       # codec distorts speech ("radio off-station").
                                       # pcmu (default) | pcma | auto (mirror inbound)
-    filler_enabled: bool = False      # "One moment, please." before STT. Only
-                                      # worth it when STT is slow (bigger model);
-                                      # with the base model (~0.6-1 s) it just
-                                      # delays the next question.
+    filler_enabled: bool = True      # "One moment, please." before STT. Covers
+                                      # the STT+TTS dead air so the patient is
+                                      # never left in silence after answering.
+                                      # The one thing the filler costs is its
+                                      # own ~1 s of audio, which is still less
+                                      # than the gap it hides.
     dialogue_enabled: bool = True     # false = Step 1 passthrough (record only)
     turn_silence_sec: float = 1.2     # silence that ends a spoken answer
     turn_max_sec: float = 10.0        # hard cap per answer (README: 8-10s)
@@ -91,6 +94,32 @@ class Settings(BaseSettings):
                                       # question: the patient may hang up when
                                       # done (the question tells them to); we
                                       # close the call either way after this.
+    final_answer_patience_sec: float = 15.0
+                                      # how long we wait for the FIRST sound in
+                                      # that window before giving up on it. Once
+                                      # the patient has said anything, silence
+                                      # never ends the window early -- only the
+                                      # full final_answer_sec does. Live 4 Oct
+                                      # 2026: the window was cut after 2.5 s by
+                                      # the frame-gap timeout and the bot talked
+                                      # over the patient's answer.
+    hangup_grace_sec: float = 60.0    # after the closing line we stop talking
+                                      # and let the patient end their own call.
+                                      # If they are still connected this long
+                                      # after the goodbye, we hang up for them
+                                      # (the line is billed either way).
+    max_silent_attempts: int = 2      # how many times a question may go
+                                      # unheard before we stop asking and close
+                                      # politely. Without this cap, a patient we
+                                      # cannot hear (background noise, muted
+                                      # line, they put the phone down) got the
+                                      # ENTIRE script fired at them in a few
+                                      # seconds -- live bug, 2 Oct 2026.
+    beep_enabled: bool = True         # beep before the final answer capture:
+                                      # the question says "speak clearly after
+                                      # the beep", so the beep is the cue.
+    beep_frequency_hz: float = 1000.0  # telephony dial/alert tone (A through F)
+    beep_duration_ms: float = 350.0    # per beep (two beeps with a short gap)
 
     # -- Cost rails (call-duration + rate limits) ------------------------------
     # Every answered minute is a billed minute, so the call driver enforces a
@@ -112,20 +141,37 @@ class Settings(BaseSettings):
     # -- Alerts (Step 7, reworked) ----------------------------------------------
     # A HIGH-risk call ALWAYS gets its alert text built and stored on the call
     # row; ALERT_DELIVERY decides whether that text is also pushed anywhere:
-    #   ready    (default for this demo): prepare + store only. The dashboard
-    #            shows the message on the call detail (with a Copy button) so
-    #            the on-call nurse can paste it into whatever channel the
-    #            hospital actually uses. Nothing leaves the backend.
-    #   whatsapp: additionally POST it to the Zernio sandbox conversation below
-    #            (the original Step 7 behaviour, kept for when a delivery
-    #            channel is agreed -- e.g. the real hospital WhatsApp number).
+    #   whatsapp (default) = post the SHORT alert into the care team's WhatsApp
+    #            conversation. Needs ZERNIO_ALERT_CONVERSATION_ID -- a WhatsApp
+    #            window only lives 24 h, so `python get-info.py` opens/re-opens
+    #            it (see backend/get-info.py) and prints the id for .env. If the
+    #            conversation is missing the alert is still prepared and stored
+    #            (status 'not_configured') and can be sent later from the
+    #            dashboard's call detail ("Send alert now").
+    #   ready             = prepare + store only; nothing leaves the backend
     alerts_enabled: bool = True
-    alert_delivery: str = "ready"          # ready | whatsapp
+    alert_delivery: str = "whatsapp"       # whatsapp | ready
     # Sandbox WhatsApp credentials (only used when ALERT_DELIVERY=whatsapp).
     # Deliberately separate from FROM_NUMBER (the real toll-free voice line):
     # voice keeps dialing from the toll-free number, alerts ride the sandbox.
-    inbox_account_id: str = ""             # Zernio sandbox account id
-    alert_conversation_id: str = ""        # id of the sandbox WhatsApp thread
+    #
+    # The aliases matter: pydantic would otherwise map these fields to
+    # INBOX_ACCOUNT_ID / ALERT_CONVERSATION_ID, while .env, .env.example and
+    # every doc have always used the ZERNIO_-prefixed names -- so following the
+    # documentation silently produced "WhatsApp not configured".
+    inbox_account_id: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ZERNIO_INBOX_ACCOUNT_ID", "INBOX_ACCOUNT_ID", "inbox_account_id",
+        ),
+    )
+    alert_conversation_id: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ZERNIO_ALERT_CONVERSATION_ID", "ALERT_CONVERSATION_ID",
+            "alert_conversation_id",
+        ),
+    )
 
     # -- Scheduler (Step 8) ------------------------------------------------------
     # SCHEDULE_CALLS_ENABLED is the master switch.
@@ -153,11 +199,11 @@ class Settings(BaseSettings):
     # works; if both are empty, /auth/login refuses to issue tokens.
     jwt_secret: str = ""                  # secret -- never logged
     jwt_expires_minutes: int = 480
-    jwt_issuer: str = "voicecare-lk"
+    jwt_issuer: str = "voicecare"
     admin_username: str = "admin"         # seeded on startup when no staff exist
     admin_password: str = ""              # required for the seed to happen
     admin_display_name: str = "System Administrator"
-    default_hospital: str = "VoiceCare LK"
+    default_hospital: str = "VoiceCare"
     # Browser origins allowed to call the API (the Vite dev server).
     cors_allow_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

@@ -200,7 +200,7 @@ export default function PatientsPage() {
                 value={form.patient_code}
                 onChange={(e) => setForm({ ...form, patient_code: e.target.value })}
                 placeholder="P-0001"
-                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200 read-only:bg-neutral-100 read-only:text-neutral-600 dark:read-only:bg-white/5 dark:read-only:text-neutral-400"
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200 read-only:bg-neutral-100 read-only:text-neutral-600 dark:read-only:bg-white/5 dark:read-only:text-neutral-400"
               />
               {editing !== null && (
                 <span className="mt-1 block text-xs font-normal text-neutral-500 dark:text-neutral-400">
@@ -214,7 +214,7 @@ export default function PatientsPage() {
               <input
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
-                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
               />
             </label>
             <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
@@ -224,7 +224,7 @@ export default function PatientsPage() {
                 value={form.phone_number}
                 onChange={(e) => setForm({ ...form, phone_number: e.target.value })}
                 placeholder="+94771234567"
-                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
               />
             </label>
             <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
@@ -234,7 +234,7 @@ export default function PatientsPage() {
                 onChange={(e) =>
                   setForm({ ...form, diagnosis_category: e.target.value })
                 }
-                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
               >
                 {CATEGORIES.map((c) => (
                   <option key={c} value={c}>
@@ -252,7 +252,7 @@ export default function PatientsPage() {
                 type="date"
                 value={form.discharge_date}
                 onChange={(e) => setForm({ ...form, discharge_date: e.target.value })}
-                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
               />
             </label>
             <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
@@ -262,7 +262,7 @@ export default function PatientsPage() {
                 onChange={(e) =>
                   setForm({ ...form, language_pref: e.target.value })
                 }
-                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
               >
                 {LANGUAGES.map((l) => (
                   <option key={l.value} value={l.value}>
@@ -286,7 +286,7 @@ export default function PatientsPage() {
                 rows={2}
                 value={form.notes}
                 onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#121714] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
               />
             </label>
             <div className="flex flex-wrap items-center gap-2 sm:col-span-2">

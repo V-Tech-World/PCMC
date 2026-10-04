@@ -3,19 +3,21 @@
 /* Class-based dark mode: .dark is toggled on <html> (default = light). */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* VoiceCare LK brand tokens (taken from designs/icons logo gradients). */
+/* VoiceCare brand tokens: a modern blue for buttons, gradients and accents.
+   Semantic states (success / LOW risk / OK) stay emerald on purpose -- green
+   there means "fine", not "brand". */
 @theme {
-  --color-brand-50: #f0f7f2;
-  --color-brand-100: #dceee2;
-  --color-brand-200: #b9dcc5;
-  --color-brand-300: #8fc3a4;
-  --color-brand-400: #63a67d;
-  --color-brand-500: #4c8c5c;
-  --color-brand-600: #3b7349;
-  --color-brand-700: #2f6142;
-  --color-brand-800: #275037;
-  --color-brand-900: #1f3d28;
-  --color-ink: #1f3d28;
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+  --color-brand-800: #1e40af;
+  --color-brand-900: #1e3a8a;
+  --color-ink: #1e3a8a;
 }
 
 html {
@@ -26,7 +28,7 @@ body {
   margin: 0;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     Arial, sans-serif;
-  background: #f6f7f6;
+  background: #f5f7fb;
   color: #262626;
 }
 
@@ -51,13 +53,13 @@ textarea:disabled {
 a:focus-visible,
 button:focus-visible,
 [role="tab"]:focus-visible {
-  outline: 2px solid #2f6142;
+  outline: 2px solid #2563eb;
   outline-offset: 2px;
 }
 
 ::selection {
-  background: #b9dcc5;
-  color: #1f3d28;
+  background: #bfdbfe;
+  color: #1e3a8a;
 }
 
 /* ---- Motion ------------------------------------------------------------- */
@@ -161,12 +163,12 @@ button:focus-visible,
 }
 
 .dark body {
-  background: #101512;
-  color: #e6eae7;
+  background: #0b1220;
+  color: #e5e9f2;
 }
 
 .dark .skeleton {
-  background: linear-gradient(90deg, #232a26 25%, #2c332f 50%, #232a26 75%);
+  background: linear-gradient(90deg, #1a2338 25%, #212c44 50%, #1a2338 75%);
   background-size: 200% 100%;
 }
 
@@ -197,10 +199,10 @@ button:focus-visible,
 /* ---- Slim themed scrollbars ---------------------------------------------- */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #c9cfcb transparent;
+  scrollbar-color: #c4ccdb transparent;
 }
 .dark * {
-  scrollbar-color: #3a423d transparent;
+  scrollbar-color: #2b3550 transparent;
 }
 ::-webkit-scrollbar {
   width: 10px;
@@ -210,12 +212,12 @@ button:focus-visible,
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #c9cfcb;
+  background: #c4ccdb;
   border-radius: 8px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 .dark ::-webkit-scrollbar-thumb {
-  background: #3a423d;
+  background: #2b3550;
   background-clip: content-box;
 }

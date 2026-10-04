@@ -99,7 +99,7 @@ export default function Layout() {
   const items = NAV_ITEMS.filter((item) => !item.perm || can(item.perm));
 
   return (
-    <div className="flex min-h-screen bg-neutral-50 dark:bg-[#101512]">
+    <div className="flex min-h-screen bg-neutral-50 dark:bg-[#0b1220]">
       {drawerOpen && (
         <div
           className="fixed inset-0 z-30 bg-black/40 lg:hidden"
@@ -109,14 +109,14 @@ export default function Layout() {
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-60 flex-col bg-neutral-700 dark:bg-[#141916] transition-transform duration-200 lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-60 flex-col bg-neutral-700 dark:bg-[#111a2e] transition-transform duration-200 lg:static lg:translate-x-0 ${
           drawerOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
         <div className="flex h-16 shrink-0 items-center justify-center border-b border-white/10 px-3">
           <img
             src="/logo-horizontal-light.svg"
-            alt="VoiceCare LK"
+            alt="VoiceCare"
             className="h-9 w-auto"
           />
         </div>
@@ -155,7 +155,7 @@ export default function Layout() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex h-16 items-center justify-between gap-3 bg-neutral-200 px-4 shadow-sm dark:border-b dark:border-white/5 dark:bg-[#1a211d]">
+        <header className="sticky top-0 z-20 flex h-16 items-center justify-between gap-3 bg-neutral-200 px-4 shadow-sm dark:border-b dark:border-white/5 dark:bg-[#16203a]">
           <div className="flex min-w-0 items-center gap-3">
             <button
               type="button"
@@ -166,7 +166,7 @@ export default function Layout() {
               <Ico>{ICON_MENU}</Ico>
             </button>
             <span className="truncate text-sm font-bold text-neutral-700 dark:text-neutral-200">
-              {user?.hospital || "VoiceCare LK"}
+              {user?.hospital || "VoiceCare"}
             </span>
           </div>
 

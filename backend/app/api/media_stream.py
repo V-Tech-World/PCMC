@@ -42,6 +42,11 @@ router = APIRouter()
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9_-]")
 _BYTES_PER_A_LAW_SECOND = 8000  # 1 byte per sample at 8 kHz
+_FRAMES_PER_SECOND = 50         # one 20 ms media frame
+# A healthy leg streams continuously. Below this share of the expected frames,
+# empty answers mean "we lost the audio", not "the patient stayed quiet".
+_MIN_INBOUND_PCT = 60.0
+_MIN_INBOUND_WALL_SEC = 20.0    # ignore very short calls (greetings, hangs up)
 
 
 @dataclass
@@ -141,22 +146,50 @@ class MediaSession:
     def handle_stop(self) -> None:
         self.stop_received = True
         self.ended = True
-        duration = 0.0
+        self.log_stream_stats("stop event")
+
+    def log_stream_stats(self, why: str) -> None:
+        """Always report how much patient audio the leg actually delivered.
+
+        Live 4 Oct 2026: a 94 s call stored 1.4 s of patient audio (3 of 5
+        answers empty) and the only trace was the database saying "medium".
+        The `stop` event does not always arrive -- when the provider just
+        closes the socket these numbers were never logged at all, which is
+        exactly when they matter most.
+
+        `received` counts EVERY frame the provider sent (kept + the ones we
+        threw away as echo while we were speaking + wrong-track ones). That
+        split is the whole diagnosis:
+
+        - received ~= expected, kept ~= 0  -> WE discarded it (echo window /
+          settle too aggressive).
+        - received ~= 0                   -> the provider/ngrok leg stopped
+          sending patient audio entirely.
+        """
+        wall = 0.0
         if self.started_at is not None:
-            duration = time.monotonic() - self.started_at
-        total = self.total_audio_bytes
+            wall = time.monotonic() - self.started_at
+        expected = int(wall * _FRAMES_PER_SECOND)
+        received = self.media_frames + self.frames_while_speaking + self.track_skipped
+        delivery_pct = (received / expected * 100) if expected else 0.0
         logger.info(
-            "event=stop call_id=...%s codec=%s media_frames=%d audio_bytes=%d "
-            "(~%.1fs of audio, %.1fs wall, max frame gap %.2fs, echo_frames=%d)",
-            self.call_id,
-            self.encoding,
+            "Inbound audio (%s): received=%d of ~%d expected over %.1fs wall "
+            "(%.0f%% delivered) -> kept=%d (~%.1fs, %d dropped as our own echo, "
+            "%d wrong track), max_frame_gap=%.2fs",
+            why, received, expected, wall, delivery_pct,
             self.media_frames,
-            total,
-            total / _BYTES_PER_A_LAW_SECOND,
-            duration,
+            self.total_audio_bytes / _BYTES_PER_A_LAW_SECOND,
+            self.frames_while_speaking, self.track_skipped,
             self.max_frame_gap_sec,
-            self.frames_while_speaking,
         )
+        if delivery_pct < _MIN_INBOUND_PCT and wall > _MIN_INBOUND_WALL_SEC:
+            logger.warning(
+                "Provider delivered only %.0f%% of an expected audio stream "
+                "(%d of ~%d frames in %.1fs) -- empty answers on this call are "
+                "a CAPTURE failure, not 'the patient said nothing'. Check the "
+                "Zernio/ngrok media leg before trusting the risk score.",
+                delivery_pct, received, expected, wall,
+            )
 
     @property
     def total_audio_bytes(self) -> int:
@@ -259,6 +292,10 @@ async def media_stream(websocket: WebSocket) -> None:
         receiver.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await receiver
+        # The provider does not always send `stop` before closing the socket
+        # (live 4 Oct 2026), and that is exactly the case where the inbound
+        # numbers are worth having -- log them unconditionally.
+        session.log_stream_stats("stream closed")
         path = session.save_recording(settings.recordings_dir)
         agent_path = session.save_agent_recording(settings.recordings_dir)
         if token:

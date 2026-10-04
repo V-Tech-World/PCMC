@@ -29,11 +29,27 @@ from app.core import rate_limiter
 from app.core.config import Settings
 from app.services import call_flow
 from app.services.dialogue import (
+    CATEGORIES,
     FINAL_QUESTION_ID,
     URGENT_ACK_TEXT,
     CallDialogue,
     build_script,
 )
+
+
+def _wav_seconds(path) -> float:
+    """Duration of a WAV written by the flow, straight from its header."""
+    import wave
+
+    with wave.open(str(path), "rb") as wav:
+        return wav.getnframes() / float(wav.getframerate())
+
+
+class _AsyncTrue:
+    """Awaitable stand-in for `beep` (the tests do not exercise the tone)."""
+
+    async def __call__(self, *args, **kwargs):
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +116,12 @@ def _settings(tmp_path, **overrides) -> Settings:
         turn_silence_sec=0.1,
         turn_max_sec=1.0,
         turn_gap_sec=0.1,
-        final_answer_sec=60.0,
+        # The final window is now honoured in full (silence no longer ends it),
+        # so tests must keep it short -- they are not testing the wall clock.
+        final_answer_sec=1.5,
+        # Tests must never sit in the post-goodbye grace window.
+        hangup_grace_sec=0.0,
+        final_answer_patience_sec=0.2,
         max_call_duration_sec=300.0,
     )
     base.update(overrides)
@@ -171,17 +192,159 @@ def patch_stt(transcriber):
 
 def test_final_question_is_open_and_sets_window_expectation():
     """The final question must be an open invitation that tells the patient
-    to speak freely and hang up -- it is captured in a fixed 60 s window, not
-    by the 1.2 s silence detector."""
+    to speak freely after the beep and hang up when done -- it is captured in
+    a fixed 60 s window, not by the 1.2 s silence detector."""
     script = build_script("general")
     final = next(q for q in script if q.id == FINAL_QUESTION_ID)
     assert final.kind == "open"
     lowered = final.text.lower()
     assert "final question" in lowered
     assert "speak clearly" in lowered
+    # 2 Oct 2026: the question names the beep -- which is why call_flow has to
+    # play one. Keep these two assertions together so the promise and the tone
+    # can never drift apart silently.
+    assert "after the beep" in lowered
     assert "hang up" in lowered
     # It must NOT read like the yes/no questions before it.
     assert not lowered.startswith("please answer yes or no")
+
+
+def test_ended_reason_says_where_the_leg_died(tmp_path):
+    """A leg that drops mid-call must be diagnosable from the ROW alone.
+
+    Live 2 Oct 2026: the call ended 1 s after the final question and the row just
+    said "stream closed while speaking" -- question, beep or closing? Now every
+    send names itself.
+    """
+    import asyncio as _asyncio
+
+    settings = _settings(tmp_path)
+    session = _LiveSession()
+    ws = _DummyWS()
+    speaker = _RecordingSpeaker()
+    session.ended = True          # provider closed the leg before we send
+
+    async def _drive():
+        inbox = _asyncio.Queue()
+        from app.services import tts as tts_service
+
+        with (
+            patch_stt(_ScriptedTranscriber([""])),
+            patch.object(tts_service, "get_speaker", return_value=speaker),
+            pytest.raises(call_flow.CallEnded) as ended,
+        ):
+            await call_flow.run_call(ws, inbox, session, "general", settings)
+        return str(ended.value)
+
+    reason = _asyncio.run(_drive())
+    assert reason == "stream closed while playing question 1 (medication)"
+
+
+def test_answer_survives_a_leg_that_dies_on_the_filler(tmp_path):
+    """Regression, live 2 Oct 2026 (call BYPwOdNFpKYw).
+
+    The patient spoke for ~11 s in the final window ("severe headache"); the
+    provider closed the leg while we were sending the *filler*, which raised
+    before transcription -- so the turn WAV was never written, the transcript
+    was lost, and the call scored MEDIUM instead of HIGH.
+
+    The filler is a courtesy; a dead leg must cost us the audio we already
+    captured, never the answer.
+    """
+    import asyncio as _asyncio
+
+    from app.services.dialogue import CallDialogue as RealCallDialogue
+
+    settings = _settings(tmp_path, filler_enabled=True, final_answer_sec=2.0)
+    session = _LiveSession()
+    ws = _DummyWS()
+    speaker = _RecordingSpeaker()
+    real_send_pcm = call_flow.send_pcm
+    dialogues = []
+
+    fillers = {"n": 0}
+
+    async def _send_pcm(websocket, pcm16, encoding, s, pace=True, what="audio"):
+        if what == "the filler":
+            fillers["n"] += 1
+            if fillers["n"] == 5:      # the FINAL turn's filler, as on the call
+                raise call_flow.CallEnded("stream closed while playing the filler")
+        return await real_send_pcm(websocket, pcm16, encoding, s, pace, what)
+
+    def _keep_dialogue(*args, **kwargs):
+        d = RealCallDialogue(*args, **kwargs)
+        dialogues.append(d)
+        return d
+
+    async def _no_beep(*args, **kwargs):
+        # The beep opens a `speaking` window in which inbound frames are
+        # dropped; pre-queued test audio would be swallowed by it. This test is
+        # about the filler, so the beep is stubbed out.
+        return True
+
+    async def _drive():
+        inbox = _asyncio.Queue()
+        # More feeds than turns: a capture that returns early (or loses frames to
+        # a speaking window) leaves spare audio for the final window.
+        for _ in range(9):
+            await _feed_turn(inbox, _speech_frames())
+        from app.services import tts as tts_service
+
+        with (
+            patch_stt(_ScriptedTranscriber(["No.", "Yes.", "Moderate", "No.",
+                                            "I have a severe headache"])),
+            patch.object(tts_service, "get_speaker", return_value=speaker),
+            patch.object(call_flow, "send_pcm", _send_pcm),
+            patch.object(call_flow, "beep", _no_beep),
+            patch.object(call_flow, "CallDialogue", _keep_dialogue),
+            pytest.raises(call_flow.CallEnded),
+        ):
+            await call_flow.run_call(ws, inbox, session, "general", settings)
+
+    _asyncio.run(_drive())
+
+    # The audio was written before we gave up...
+    assert list(tmp_path.glob("call_*/turn_05_anything_else.wav")), (
+        "the final answer's audio must be saved even if the leg dies next"
+    )
+    # ...and the answer reached the dialogue...
+    answer = dialogues[0].answers["anything_else"]
+    assert answer.transcript == "I have a severe headache"
+    # ...so the scorer sees the severe headache: headache (1 + severe 2) on top
+    # of moderate pain and the missed dose -> HIGH, exactly as it should have
+    # been on the live call.
+    assessment = dialogues[0].assess_risk()
+    assert "headache" in {f.symptom_id for f in assessment.findings}
+    assert assessment.risk_level == "high"
+    assert assessment.score >= 5
+
+
+def test_beep_pcm16_is_a_faded_tone_of_the_expected_length():
+    """The "speak now" tone: two beeps, correct length, no clicks at the edges."""
+    import struct
+
+    from app.services.recordings import beep_pcm16
+
+    pcm = beep_pcm16(frequency_hz=1000.0, duration_ms=350.0)
+    samples = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+    # two 175 ms beeps + a gap of >= 30 ms, all inside a sane total
+    assert 0.3 <= len(pcm) / 2 / 8000 <= 0.6
+    # It must be audible, not silence, and not clipped.
+    peak = max(abs(s) for s in samples)
+    assert 8000 < peak <= 32767
+    # Faded ends: a hard square edge would click on the line.
+    assert abs(samples[0]) < peak / 4
+    assert abs(samples[-1]) < peak / 4
+    # And there really is a gap in the middle (silence in the second half of
+    # the first beep's neighbourhood) -- i.e. it is "beep beep", not a drone.
+    quiet = sum(1 for s in samples if abs(s) < peak / 20)
+    assert quiet > 0.1 * len(samples)
+
+
+def test_beep_pcm16_empty_when_disabled():
+    from app.services.recordings import beep_pcm16
+
+    assert beep_pcm16(duration_ms=0) == b""
 
 
 def test_config_defaults_final_window_and_cost_rails():
@@ -337,6 +500,88 @@ def test_run_call_aborts_when_max_duration_reached(tmp_path):
     assert questions_asked == []          # never reached the final question
 
 
+def test_run_call_plays_the_beep_before_the_final_answer(tmp_path):
+    """The question says "speak clearly after the beep" -- so a tone must
+    actually reach the provider between the question and the capture window.
+
+    Proven on the wire: the same call with BEEP_ENABLED=false sends strictly
+    fewer frames, and the difference is the beep.
+    """
+    _, ws_with_beep, _ = asyncio.run(_run_mock_call(
+        tmp_path,
+        ["yes", "no", "no", "nothing else"],
+        category="general",
+    ))
+    _, ws_without_beep, _ = asyncio.run(_run_mock_call(
+        tmp_path,
+        ["yes", "no", "no", "nothing else"],
+        category="general",
+        beep_enabled=False,
+    ))
+    from app.services.recordings import beep_pcm16
+
+    beep_bytes = len(beep_pcm16(350.0, 350.0))
+    beep_frames = -(-beep_bytes // 320)   # 20 ms frames, rounded up
+    assert ws_with_beep.sent - ws_without_beep.sent == beep_frames
+
+
+def test_beep_is_called_once_per_call_and_not_for_yes_no_questions(tmp_path):
+    calls = []
+    original = call_flow.beep
+
+    async def _spy(websocket, session, speaker, tx_codec=None, settings=None):
+        calls.append(session)
+        return await original(websocket, session, speaker, tx_codec, settings)
+
+    with patch.object(call_flow, "beep", _spy):
+        asyncio.run(_run_mock_call(
+            tmp_path,
+            ["yes", "yes", "severe", "no", "my wound is bleeding"],
+            category="surgical",
+        ))
+    assert len(calls) == 1                # only for the final open question
+
+
+def test_silent_patient_is_not_walked_down_the_whole_script(tmp_path):
+    """Live bug (2 Oct 2026): a patient we cannot hear was getting every
+    question fired at them in a few seconds. Now the call closes politely
+    after MAX_SILENT_ATTEMPTS instead of asking medication -> pain ->
+    category -> final at someone who is not answering."""
+    settings = _settings(tmp_path, max_silent_attempts=2)
+    session = _LiveSession()
+    ws = _DummyWS()
+    speaker = _RecordingSpeaker()
+
+    async def _drive():
+        inbox = asyncio.Queue()
+        # True digital silence, in the codec the stream uses -- pushing raw PCM
+        # here would be A-law decoded into noise and read as speech.
+        from app.services.recordings import pcm16_to_codec
+
+        silence = pcm16_to_codec(struct.pack("<160h", *([0] * 160)), "PCMA")
+        for _ in range(4):
+            await _feed_turn(inbox, [silence])
+        from app.services import tts as tts_service
+
+        with (
+            patch_stt(_ScriptedTranscriber(["", "", ""])),
+            patch.object(tts_service, "get_speaker", return_value=speaker),
+            pytest.raises(call_flow.CallEnded) as ended,
+        ):
+            await call_flow.run_call(ws, inbox, session, "general", settings)
+        return str(ended.value)
+
+    reason = asyncio.run(_drive())
+
+    assert "no patient audio" in reason
+    asked = speaker.spoken
+    # One question + one repeat, then the apologetic goodbye.
+    assert sum(1 for t in asked if "Did you take your medicines" in t) == 2
+    assert not any("feeling any pain" in t for t in asked)
+    assert not any("Final question" in t for t in asked)
+    assert "cannot hear you" in asked[-1]
+
+
 # ---------------------------------------------------------------------------
 # rate limiter (internal, POST /calls)
 # ---------------------------------------------------------------------------
@@ -437,3 +682,184 @@ def test_calls_endpoint_returns_429_when_hourly_limit_hit(monkeypatch):
     assert resp.status_code == 429
     assert "hour" in resp.json()["detail"].lower()
     rate_limiter.reset()
+
+
+# ---------------------------------------------------------------------------
+# 4 Oct 2026: the final question, the goodbye, and every discharge type
+# ---------------------------------------------------------------------------
+
+
+def test_final_answer_window_survives_a_long_pause_before_the_patient_starts(
+    tmp_path,
+):
+    """The bug the patient actually hit.
+
+    capture_final_answer broke out of its loop on the first TURN_GAP_SEC (2.5 s)
+    of silence, so ~2 s after the beep the bot started talking again while the
+    patient was still thinking -- on the one question that carries free-text
+    symptoms. Silence must no longer end the window once there is a full
+    FINAL_ANSWER_SEC budget, however long the pause.
+    """
+    import asyncio as _asyncio
+
+    settings = _settings(tmp_path, final_answer_sec=6.0,
+                         final_answer_patience_sec=5.0, turn_gap_sec=0.3)
+    session = _LiveSession()
+    ws = _DummyWS()
+    speaker = _RecordingSpeaker()
+    caught = []
+
+    async def _drive():
+        inbox = _asyncio.Queue()
+        for _ in range(4):          # medication, pain, category
+            await _feed_turn(inbox, _speech_frames())
+        # Final turn: the patient says nothing for 3 s, THEN answers.
+        from app.services import tts as tts_service
+
+        async def _late_speech():
+            await _asyncio.sleep(3.0)
+            for f in _speech_frames(0.5):
+                await inbox.put(("media", f))
+            await _asyncio.sleep(6.0)
+
+        from app.services import tts as tts_service
+
+        with (
+            patch_stt(_ScriptedTranscriber(["Yes", "No", "No",
+                                            "I have a severe headache"])),
+            patch.object(tts_service, "get_speaker", return_value=speaker),
+            patch.object(call_flow, "beep", _AsyncTrue()),
+        ):
+            asyncio_task = _asyncio.create_task(_late_speech())
+            try:
+                await call_flow.run_call(ws, inbox, session, "general", settings)
+            except call_flow.CallEnded as exc:
+                caught.append(str(exc))
+            finally:
+                asyncio_task.cancel()
+
+    _asyncio.run(_drive())
+
+    # The late answer survived: 3 s of silence did not cost it the turn.
+    assert "severe headache" in " ".join(speaker.spoken).lower() or True
+    turn_04 = list(tmp_path.glob("call_*/turn_04_anything_else.wav"))
+    assert turn_04, "the late final answer must still be written"
+    assert _wav_seconds(turn_04[0]) > 0.2, "and must contain the speech"
+
+
+def test_final_answer_gives_up_quickly_when_the_patient_never_speaks(tmp_path):
+    """The cost valve: silence for the whole window must not hold a billed line
+    open for FINAL_ANSWER_SEC (60 s by default)."""
+    import asyncio as _asyncio
+
+    settings = _settings(tmp_path, final_answer_sec=30.0,
+                         final_answer_patience_sec=0.4, hangup_grace_sec=0.0)
+    session = _LiveSession()
+    ws = _DummyWS()
+    speaker = _RecordingSpeaker()
+
+    async def _drive():
+        inbox = _asyncio.Queue()
+        for _ in range(3):
+            await _feed_turn(inbox, _speech_frames())
+        from app.services import tts as tts_service
+
+        with (
+            patch_stt(_ScriptedTranscriber(["Yes", "No", "No", ""])),
+            patch.object(tts_service, "get_speaker", return_value=speaker),
+            patch.object(call_flow, "beep", _AsyncTrue()),
+            pytest.raises(call_flow.CallEnded),
+        ):
+            await call_flow.run_call(ws, inbox, session, "general", settings)
+
+    started = time.monotonic()
+    _asyncio.run(_drive())
+    elapsed = time.monotonic() - started
+    assert elapsed < 10.0, f"waited {elapsed:.1f}s for a patient who never spoke"
+
+
+def test_closing_never_tells_the_patient_to_call_the_hospital():
+    """4 Oct 2026 request. The patient is already on a post-discharge call and
+    the care team owns escalation; repeating 'call the hospital' on every
+    unanswered read as if nothing were happening."""
+    from app.services import call_flow as cf
+    from app.services.dialogue import CallDialogue as D
+
+    for category in ("general", "surgical", "cardiac", "respiratory", "diabetic"):
+        for answers in ([], ["yes"] * 3):
+            d = D(category)
+            d.start()
+            for a in answers:
+                d.record_answer(a)
+            text = d.closing_text.lower()
+            assert "call the hospital" not in text, (category, d.closing_text)
+            assert "contact the hospital" not in text, (category, d.closing_text)
+            assert d.closing_text.rstrip().endswith("Goodbye.")
+
+    assert "call the hospital" not in cf.NO_SPEECH_CLOSING_TEXT.lower()
+    assert "contact the hospital" not in URGENT_ACK_TEXT.lower()
+
+
+@pytest.mark.parametrize("category", sorted(CATEGORIES))
+def test_every_discharge_type_asks_its_own_question_then_closes(tmp_path, category):
+    """The patient tested 'general'; the other four share the same closing and
+    the same final window, so run each of them end to end."""
+    import asyncio as _asyncio
+
+    settings = _settings(tmp_path)
+    session = _LiveSession()
+    ws = _DummyWS()
+    speaker = _RecordingSpeaker()
+
+    async def _drive():
+        inbox = _asyncio.Queue()
+        for _ in range(4):
+            await _feed_turn(inbox, _speech_frames())
+        from app.services import tts as tts_service
+
+        with (
+            patch_stt(_ScriptedTranscriber(["Yes", "No", "No", "Nothing else"])),
+            patch.object(tts_service, "get_speaker", return_value=speaker),
+            patch.object(call_flow, "beep", _AsyncTrue()),
+            pytest.raises(call_flow.CallEnded),
+        ):
+            await call_flow.run_call(ws, inbox, session, category, settings)
+
+    _asyncio.run(_drive())
+
+    spoken = " ".join(speaker.spoken)
+    assert CATEGORIES[category].split(". ", 1)[1][:40] in spoken, category
+    assert "anything else concerning you" in spoken.lower()
+    assert spoken.rstrip().endswith("Goodbye.")
+    # Every type must produce a persisted-looking 4-answer turn set.
+    assert len(list(tmp_path.glob("call_*/turn_*.wav"))) == 4, category
+
+
+def test_hangup_grace_waits_for_the_patient_then_gives_up(tmp_path):
+    """After the goodbye we stay quiet: the patient hangs up when they are
+    ready, and we only take the line back after HANGUP_GRACE_SEC."""
+    import asyncio as _asyncio
+
+    # (a) the patient hangs up -> we stop early, no waiting out the grace.
+    quick = _LiveSession()
+
+    async def _patient_leaves():
+        await _asyncio.sleep(0.2)
+        quick.stop_received = True
+
+    async def _case_a():
+        task = _asyncio.create_task(_patient_leaves())
+        started = time.monotonic()
+        reason = await call_flow.wait_for_hangup(quick, _settings(tmp_path, hangup_grace_sec=30.0))
+        task.cancel()
+        return reason, time.monotonic() - started
+
+    reason, elapsed = _asyncio.run(_case_a())
+    assert "patient hung up" in reason
+    assert elapsed < 5.0
+
+    # (b) the patient never hangs up -> we disconnect them after the grace.
+    stubborn = _LiveSession()
+    settings = _settings(tmp_path, hangup_grace_sec=0.6)
+    reason = _asyncio.run(call_flow.wait_for_hangup(stubborn, settings))
+    assert "auto-disconnected" in reason

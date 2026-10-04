@@ -27,7 +27,7 @@ const PANEL: Record<Kind, string> = {
   ok: "bg-emerald-50 text-emerald-800 ring-emerald-200 dark:bg-emerald-950/90 dark:text-emerald-200 dark:ring-emerald-800",
   error:
     "bg-red-50 text-red-700 ring-red-200 dark:bg-red-950/90 dark:text-red-200 dark:ring-red-800",
-  info: "bg-brand-50 text-brand-800 ring-brand-200 dark:bg-[#182219]/90 dark:text-brand-200 dark:ring-brand-700",
+  info: "bg-brand-50 text-brand-800 ring-brand-200 dark:bg-[#16233f]/90 dark:text-brand-200 dark:ring-brand-700",
 };
 
 const BADGE: Record<Kind, string> = {

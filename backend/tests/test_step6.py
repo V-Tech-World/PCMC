@@ -257,6 +257,9 @@ def test_run_call_persists_a_row(tmp_path):
         assert row.risk_level == "high"
         assert row.diagnosis_category == "cardiac"
         assert len(row.get_answers()) == 4
-        assert row.ended_reason == "dialogue finished"
+        # The reason now also records how the call ended: we spoke the closing
+        # line, then either waited for the patient to hang up or took the line
+        # back after HANGUP_GRACE_SEC.
+        assert row.ended_reason.startswith("dialogue finished")
     finally:
         _engine_for.cache_clear()

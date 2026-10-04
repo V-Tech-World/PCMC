@@ -658,3 +658,53 @@ def test_confusion_and_urine_problems_score_medium():
         assert assessment.risk_level == "medium", transcript
         assert not any(f.red_flag for f in assessment.findings)
 
+
+
+def test_unanswered_questions_are_reported_not_treated_as_no_symptoms():
+    """Regression, live 4 Oct 2026 (call 7k_egAUXucJw, general patient).
+
+    The media leg delivered 1.4 s of audio for a 94 s call: medication,
+    pain_severity and anything_else came back empty. Nothing in the score said
+    so -- the row read as a calm MEDIUM 3, because an unanswered question and
+    a "no" look identical to the scorer.
+
+    Silence must therefore be stated in the reasons. It must NOT add points:
+    a transport failure is not evidence of risk.
+    """
+    answers = [
+        {"question_id": "medication", "kind": "yes_no",
+         "interpretation": None, "transcript": ""},
+        {"question_id": "pain", "kind": "yes_no",
+         "interpretation": True, "transcript": "Yes."},
+        {"question_id": "pain_severity", "kind": "choice",
+         "interpretation": None, "transcript": ""},
+        {"question_id": "category_general", "kind": "yes_no",
+         "interpretation": None, "transcript": "for me."},
+        {"question_id": "anything_else", "kind": "open",
+         "interpretation": None, "transcript": ""},
+    ]
+    assessment = assess_conversation(answers)
+
+    flagged = [r for r in assessment.reasons if "no usable audio" in r]
+    assert flagged, assessment.reasons
+    # medication + pain_severity + anything_else (the misheard "for me." counts
+    # as an answer, so it is not one of the three).
+    assert "3 question(s)" in flagged[0]
+    # It is a disclosure, not an escalation: the score is untouched.
+    assert assessment.score == 3.0
+    assert assessment.risk_level == "medium"
+
+
+def test_a_fully_answered_call_carries_no_capture_warning():
+    answers = [
+        {"question_id": "medication", "kind": "yes_no",
+         "interpretation": True, "transcript": "Yes I did"},
+        {"question_id": "pain", "kind": "yes_no",
+         "interpretation": False, "transcript": "No pain at all"},
+        {"question_id": "category_general", "kind": "yes_no",
+         "interpretation": False, "transcript": "No fever"},
+        {"question_id": "anything_else", "kind": "open",
+         "interpretation": None, "transcript": "I feel fine thanks"},
+    ]
+    assessment = assess_conversation(answers)
+    assert not [r for r in assessment.reasons if "no usable audio" in r]

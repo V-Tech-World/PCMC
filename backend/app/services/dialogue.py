@@ -162,10 +162,17 @@ def build_script(diagnosis_category: str = DEFAULT_CATEGORY) -> list[Question]:
             # everything in one go, then hang up -- we close the call after
             # FINAL_ANSWER_SEC no matter what, so "we will get back to you"
             # replaces a conversational goodbye.
+            #
+            # "after the beep" (2 Oct 2026, from live testing): the question is
+            # long, and without a cue the patient either starts talking over the
+            # last words or waits in silence for a prompt that never comes. The
+            # question therefore names the BEEP, and call_flow plays two short
+            # 1 kHz beeps right before the capture window opens -- the promise
+            # in this sentence is only true because the beep exists.
             text=(
                 "Final question. Please tell me anything else concerning you "
-                "about your recovery. Please speak clearly, and when you are "
-                "done, hang up. We will get back to you soon."
+                "about your recovery. Please speak clearly after the beep, "
+                "and when you are done, hang up. We will get back to you soon."
             ),
             kind="open",
         ),
@@ -226,17 +233,21 @@ class CallDialogue:
         gets an urgent closing so the patient knows the follow-up will come
         fast. The level is recomputed from the answers recorded so far, so it
         is correct even if the flow was cut short by a hangup.
+
+        Neither ending tells the patient to phone the hospital (4 Oct 2026):
+        they are already on a post-discharge follow-up call, the care team owns
+        the escalation, and repeating "call the hospital" on every unanswered
+        read as though nothing was going to happen. We say what we did, then
+        the patient hangs up in their own time -- see call_flow.wait_for_hangup.
         """
         if self.assess_risk().risk_level == "high":
             return (
                 "Thank you. I have noted your symptoms as urgent, and your "
-                "care team will contact you as soon as possible. If you feel "
-                "worse while you wait, please call the hospital directly. "
-                "Goodbye."
+                "care team will contact you as soon as possible. Goodbye."
             )
         return (
-            "Thank you. Your answers have been recorded and your care team will "
-            "review them. If anything changes, please contact the hospital. Goodbye."
+            "Thank you. Your answers have been recorded and your care team "
+            "will review them. Goodbye."
         )
 
     # -- advancing ------------------------------------------------------------

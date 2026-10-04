@@ -36,7 +36,7 @@ export default function ConfirmDialog({
       onClick={busy ? undefined : onCancel}
     >
       <div
-        className="pop-in w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl dark:bg-[#1a201d]"
+        className="pop-in w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl dark:bg-[#16203a]"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="text-lg font-bold text-ink dark:text-neutral-50">{title}</h3>

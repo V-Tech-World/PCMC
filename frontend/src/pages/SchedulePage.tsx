@@ -15,7 +15,7 @@ const STATUS_STYLES: Record<string, string> = {
   overdue:
     "bg-red-100 text-red-700 ring-red-200 dark:bg-red-950 dark:text-red-300 dark:ring-red-800",
   scheduled:
-    "bg-brand-100 text-brand-800 ring-brand-200 dark:bg-[#15251c] dark:text-brand-200 dark:ring-brand-700",
+    "bg-brand-100 text-brand-800 ring-brand-200 dark:bg-[#122347] dark:text-brand-200 dark:ring-brand-700",
   completed:
     "bg-emerald-100 text-emerald-700 ring-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:ring-emerald-800",
 };
@@ -123,7 +123,7 @@ export default function SchedulePage() {
         className={`rounded-xl px-4 py-3 text-sm font-medium ring-1 ${
           status.enabled
             ? "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-950 dark:text-amber-200 dark:ring-amber-800"
-            : "bg-brand-50 text-brand-800 ring-brand-200 dark:bg-[#15251c] dark:text-brand-200 dark:ring-brand-700"
+            : "bg-brand-50 text-brand-800 ring-brand-200 dark:bg-[#122347] dark:text-brand-200 dark:ring-brand-700"
         }`}
       >
         <b className="inline-flex items-center gap-2">
