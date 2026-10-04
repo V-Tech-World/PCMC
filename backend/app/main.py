@@ -41,6 +41,7 @@ from app.db import service as db_service
 from app.db.engine import init_db
 from app.services import scheduler
 from app.services import alerts as alerts_service
+from app.api.health import verify_stt_pipeline
 
 
 def _mask(secret: str) -> str:
@@ -79,6 +80,19 @@ async def lifespan(app: FastAPI):
         settings.stt_device,
         settings.stt_compute_type,
     )
+    if settings.stt_verify_on_start:
+        # A broken STT stack used to be discovered by the first patient who
+        # answered, mid-call, with the flow already crashed (live 4 Oct 2026).
+        stt_ok, stt_detail = verify_stt_pipeline()
+        if stt_ok:
+            log.info("  STT self-test: OK (model loaded and inference ran)")
+        else:
+            log.error(
+                "  STT self-test FAILED: %s -- calls will crash on the first "
+                "answer. Check the faster-whisper / PyAV versions (requirements.txt "
+                "pins av<14) before dialling anyone.",
+                stt_detail,
+            )
     if not settings.calls_api_key:
         log.warning("CALLS_API_KEY is empty -- POST /calls will refuse to dial (set it in .env)")
     # Step 6: make sure the schema exists before anything runs.

@@ -14,6 +14,13 @@ pyttsx3>=2.90
 
 # -- speech-to-text (Step 2) --
 faster-whisper>=1.0
+# PyAV 14+ REMOVED the `metadata_errors` kwarg that faster-whisper's
+# decode_audio() still passes to av.open() (live crash 4 Oct 2026:
+#   TypeError: open() got an unexpected keyword argument 'metadata_errors'
+# faster-whisper has no release that works with av>=14, so the ceiling is
+# ours, not theirs. Without the pin, any `pip install -U` breaks every call.
+# STT_VERIFY_ON_START in main.py transcribes a tone at boot to catch this.
+av>=12,<14
 
 # -- audio resampling with a real anti-alias filter (Step 3 TTS quality) --
 numpy>=1.26

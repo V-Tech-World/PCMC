@@ -13,6 +13,7 @@ import base64
 import json
 import math
 import struct
+import tempfile
 import time
 import wave
 from pathlib import Path
@@ -68,6 +69,70 @@ def test_health_ok(client):
     body = resp.json()
     assert body["status"] == "ok"
     assert body["telephony_configured"] is True
+
+
+def test_health_reports_stt_pipeline_so_a_broken_stt_is_visible_before_dialing(
+    client, monkeypatch
+):
+    """Live 4 Oct 2026: PyAV 19 dropped a kwarg faster-whisper still passes, so
+    every call crashed on its first answer -- mid-call, after the greeting, with
+    the patient already on the line. /health has to be able to say so."""
+    from app.api import health as health_api
+
+    monkeypatch.setattr(health_api, "verify_stt_pipeline", lambda: (False, "TypeError: boom"))
+    body = client.get("/health").json()
+    assert body["stt_pipeline_ok"] is False
+    assert "TypeError" in body["stt_pipeline_error"]
+
+    monkeypatch.setattr(health_api, "verify_stt_pipeline", lambda: (True, "ok"))
+    body = client.get("/health").json()
+    assert body["stt_pipeline_ok"] is True
+    assert body["stt_pipeline_error"] == "ok"
+
+
+def test_stt_self_test_writes_a_readable_wav_and_cleans_up(monkeypatch):
+    """It must exercise the real decode path, so it needs a genuine WAV -- and it
+    must not leave the file behind in the temp dir."""
+    import wave
+
+    from app.api import health as health_api
+
+    seen = {}
+
+    class _Recorder:
+        def transcribe(self, path, *a, **k):
+            with wave.open(str(path), "rb") as w:
+                seen.update(rate=w.getframerate(), ch=w.getnchannels(), frames=w.getnframes())
+            return "anything"
+
+    monkeypatch.setattr("app.services.stt.get_transcriber", lambda: _Recorder())
+    ok, detail = health_api.verify_stt_pipeline()
+    assert ok, detail
+    assert seen == {"rate": 8000, "ch": 1, "frames": 8000}
+    assert not (Path(tempfile.gettempdir()) / "voicecare_stt_selftest.wav").exists()
+
+
+def test_stt_self_test_reports_the_error_instead_of_raising(monkeypatch):
+    """A broken STT must be a clear False, never an exception escaping /health."""
+    from app.api import health as health_api
+
+    class _Broken:
+        def transcribe(self, path, *a, **k):
+            raise TypeError("open() got an unexpected keyword argument 'metadata_errors'")
+
+    monkeypatch.setattr("app.services.stt.get_transcriber", lambda: _Broken())
+    ok, detail = health_api.verify_stt_pipeline()
+    assert ok is False
+    assert "metadata_errors" in detail
+
+
+def test_requirements_pin_av_below_14():
+    """The faster-whisper/PyAV clash has no upstream fix, so the ceiling on `av`
+    is ours to hold. If someone relaxes it, every live call breaks again."""
+    text = (Path(__file__).resolve().parents[1] / "requirements.txt").read_text()
+    av_lines = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("av")]
+    assert av_lines, "requirements.txt no longer pins av at all"
+    assert any("<14" in ln for ln in av_lines), av_lines
 
 
 # --------------------------------------------------------------- POST /calls

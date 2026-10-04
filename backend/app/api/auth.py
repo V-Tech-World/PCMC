@@ -31,6 +31,7 @@ from app.core.security import (
     require_roles,
     verify_password,
 )
+from app.db.models import iso_utc
 from app.db import service as db_service
 
 logger = logging.getLogger("voicecare.auth")
@@ -72,7 +73,7 @@ def _staff_to_dict(user) -> dict:
         "role": user.role,
         "hospital": user.hospital,
         "active": user.active,
-        "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        "last_login_at": iso_utc(user.last_login_at),
     }
 
 

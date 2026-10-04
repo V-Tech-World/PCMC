@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.core.security import AuthContext, require_auth, require_roles
+from app.db.models import iso_utc
 from app.db import service as db_service
 from app.db.models import Patient
 from app.services import alerts as alerts_service
@@ -58,8 +59,8 @@ def _record_to_dict(r) -> dict:
         "patient_code": r.patient_code,
         "phone_number": r.phone_number,
         "diagnosis_category": r.diagnosis_category,
-        "started_at": r.started_at.isoformat(),
-        "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+        "started_at": iso_utc(r.started_at),
+        "finished_at": iso_utc(r.finished_at),
         "duration_sec": r.duration_sec,
         "ended_reason": r.ended_reason,
         "answers": r.get_answers(),
@@ -73,7 +74,7 @@ def _record_to_dict(r) -> dict:
         "reviewed": r.reviewed,
         "nurse_note": r.nurse_note,
         "closed_by": r.closed_by,
-        "closed_at": r.closed_at.isoformat() if r.closed_at else None,
+        "closed_at": iso_utc(r.closed_at),
     }
 
 
@@ -88,7 +89,7 @@ def _patient_to_dict(p: Patient) -> dict:
         "notes": p.notes,
         "language_pref": p.language_pref,
         "active": p.active,
-        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "created_at": iso_utc(p.created_at),
     }
 
 

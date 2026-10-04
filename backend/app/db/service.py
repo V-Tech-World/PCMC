@@ -16,7 +16,14 @@ from datetime import datetime, timezone
 from sqlmodel import select
 
 from app.db.engine import init_db, new_session
-from app.db.models import AppSetting, CallRecord, Patient, StaffUser
+from app.db.models import (
+    AppSetting,
+    CallRecord,
+    Patient,
+    StaffUser,
+    _aware_utc,
+    iso_utc,
+)
 
 logger = logging.getLogger("voicecare.db")
 
@@ -69,7 +76,7 @@ def record_call(
             patient_code=(patient.patient_code if patient else (patient_code or "")),
             phone_number=(patient.phone_number if patient else to_number),
             diagnosis_category=category,
-            started_at=started_at or datetime.now(timezone.utc),
+            started_at=_aware_utc(started_at) or datetime.now(timezone.utc),
             finished_at=datetime.now(timezone.utc),
             duration_sec=round(duration_sec, 2),
             ended_reason=ended_reason,
@@ -171,6 +178,11 @@ def update_call(
     """Patch dashboard-column fields on a call row (review flag, note, close)."""
     allowed = {"reviewed", "nurse_note", "closed_by", "closed_at"}
     patch = {k: v for k, v in fields.items() if k in allowed}
+    # Callers may hand us naive datetimes (e.g. closed_at from the API); SQLModel
+    # >= 0.0.30 rejects those on a datetime column.
+    for key in ("closed_at",):
+        if patch.get(key) is not None:
+            patch[key] = _aware_utc(patch[key])
     if not patch:
         return get_call(record_id, database_url)
     try:
@@ -241,7 +253,7 @@ def stats(database_url: str | None = None) -> dict:
         "patients_total": len(patients),
         "patients_active": sum(1 for p in patients if p.active),
         "staff_total": len(staff),
-        "last_call_at": last_call_at.isoformat() if last_call_at else None,
+        "last_call_at": iso_utc(last_call_at),
     }
 
 

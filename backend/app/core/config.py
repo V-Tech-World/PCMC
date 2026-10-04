@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     stt_device: str = "cpu"           # "cpu" (or "cuda" on GPU machines)
     stt_compute_type: str = "int8"    # int8 is the fast choice for CPU
     stt_language: str = "en"          # Step 2 is English-first per the README plan
+    # Transcribe a 1 s tone at startup to prove the STT pipeline works. Cheap
+    # insurance: an incompatible faster-whisper/PyAV pair (live 4 Oct 2026) only
+    # shows up on the FIRST patient answer, by which time the call is dead.
+    stt_verify_on_start: bool = True
 
     # -- Text-to-speech + dialogue (Step 3) ------------------------------------
     tts_backend: str = "auto"         # auto | pyttsx3 | gtts (gtts needs ffmpeg)

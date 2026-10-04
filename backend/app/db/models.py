@@ -23,7 +23,46 @@ from sqlmodel import Column, Field, SQLModel, Text
 
 
 def _utcnow() -> datetime:
+    """Timezone-aware UTC.
+
+    SQLModel >= 0.0.30 types datetime columns as UTCDateTime, which REJECTS a
+    naive value on write ("Datetime values must have timezone information").
+    Under the .venv (sqlmodel 0.0.47) that made `record_call` raise and the row
+    was never saved (live 4 Oct 2026). So: always aware in, aware out.
+    """
     return datetime.now(timezone.utc)
+
+
+def iso_utc(value: datetime | None) -> str | None:
+    """Serialise a stored (naive-UTC) datetime as an explicit-offset ISO string.
+
+    Naive datetimes read back from SQLite carry no offset, and `new Date(...)`
+    in the browser would then treat them as *local* time -- silently shifting
+    every timestamp by the viewer's UTC offset. Re-attaching UTC keeps the API
+    honest about what it stores.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
+def _aware_utc(value: datetime | None) -> datetime | None:
+    """Coerce a datetime to aware UTC for SQLModel's UTCDateTime columns.
+
+    Callers legitimately pass naive datetimes -- the scheduler works in local
+    wall-clock time (`datetime.now()`, `datetime.combine(day, time)`) and stores
+    those as ISO strings, and any naive value reaching a datetime column raises
+    "Datetime values must have timezone information" and loses the row.
+    Naive input is therefore interpreted as UTC, which is what it has always
+    meant everywhere else in this codebase.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _json_default(value):

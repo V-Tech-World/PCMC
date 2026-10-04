@@ -306,6 +306,51 @@ end-to-end by `test_every_discharge_type_asks_its_own_question_then_closes`
 (general / surgical / cardiac / respiratory / diabetic), since only `general`
 had been tested live.
 
+### 4 Oct 2026, 11:22: a call that connected fine and still went silent
+
+Live call to a **second** number (+94782586272). The log looks healthy right up
+to the point it matters:
+
+```
+event=start ... media_format={'channels': 1, 'encoding': 'PCMA', 'sample_rate': 8000}
+media format OK: PCMA / 8000 Hz / mono
+Audio codecs: inbound=PCMA outbound=PCMU (SPEAK_CODEC=pcmu)
+Speaking 73 chars as 5.8s of PCMU audio: 'Please answer yes or no...'
+Capture window (turn): 3.0s open, 130 frames, 2.6s of audio, speech=True
+ERROR | Call flow crashed
+  TypeError: open() got an unexpected keyword argument 'metadata_errors'
+```
+
+Nothing is wrong with that number. Two separate faults, both environmental:
+
+**1. `faster-whisper` vs PyAV.** PyAV 14 removed the `metadata_errors` kwarg that
+`faster_whisper.audio.decode_audio()` still passes to `av.open()`. Every call
+died on its **first** answer -- after the greeting, with the patient already on
+the line. There is no faster-whisper release that works with `av>=14`, so the
+ceiling is ours to hold:
+
+```
+av>=12,<14
+```
+
+**2. `sqlmodel` vs SQLite timestamps.** The `.venv` restart at 11:04 also
+brought `sqlmodel` 0.0.47, which types datetime columns as `UTCDateTime` and
+*rejects a naive value*. `record_call` catches that deliberately (a DB problem
+must not hide the risk decision) -- which meant a call that ran perfectly left
+**no row at all** and the dashboard simply showed nothing. `_aware_utc()` now
+coerces naive input to UTC instead of letting the write die, and `iso_utc()`
+guarantees the API still emits an explicit offset (otherwise the browser reads
+a UTC timestamp as local time and shifts every call).
+
+**Why this was invisible:** both faults only fire on a *live* call, after a real
+patient answers. So `STT_VERIFY_ON_START` (default on) now transcribes a 1 s
+tone at boot and logs `STT self-test: OK`, and `/health` carries
+`stt_pipeline_ok`. A broken stack is now visible *before* you dial anyone:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health | Select-Object stt_pipeline_ok, stt_pipeline_error
+```
+
 ### Also worth knowing
 
 `backend/.venv` is **empty** (pillow, requests, dotenv -- no pydantic, no

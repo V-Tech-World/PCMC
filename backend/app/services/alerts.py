@@ -36,6 +36,7 @@ from dataclasses import dataclass
 import requests
 
 from app.core.config import Settings, get_settings
+from app.db.models import iso_utc
 
 logger = logging.getLogger("voicecare.alerts")
 
@@ -112,7 +113,7 @@ def format_alert_message(record, patient=None) -> str:
     if record.provider_call_id:
         lines.append(f"Provider call id: {record.provider_call_id}")
     finished = record.finished_at or record.created_at
-    lines.append(f"Recorded at: {finished.isoformat()}")
+    lines.append(f"Recorded at: {iso_utc(finished)}")
     return "\n".join(lines)
 
 

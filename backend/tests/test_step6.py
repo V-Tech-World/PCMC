@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import pytest
 
+from datetime import datetime, timedelta
+
 from app.db import service as db_service
 from app.db.engine import _engine_for, init_db, resolve_database_url
-from app.db.models import CallRecord, Patient
+from app.db.models import CallRecord, Patient, iso_utc
 from app.services.nlp import assess_conversation
 
 
@@ -60,6 +62,65 @@ def _high_assessment():
 
 
 # ----------------------------------------------------------------- TC1
+
+
+def test_naive_timestamps_are_coerced_so_the_row_is_never_lost(db_url):
+    """Live 4 Oct 2026, and the quietest data-loss bug we have had.
+
+    SQLModel >= 0.0.30 types datetime columns as UTCDateTime, which raises
+    "Datetime values must have timezone information" on a naive value.
+    `record_call` swallows that (a DB problem must not hide the risk decision),
+    so a call that ran perfectly left NO row and the dashboard simply showed
+    nothing. Naive input must be treated as UTC, never rejected.
+    """
+    assessment, answers = _high_assessment()
+    naive = datetime(2026, 10, 4, 6, 0, 0)  # deliberately no tzinfo
+    record = db_service.record_call(
+        dialogue=_FakeDialogue(answers),
+        assessment=assessment,
+        provider_call_id="call_naive",
+        to_number="+94777000009",
+        ended_reason="dialogue finished",
+        duration_sec=10.0,
+        started_at=naive,
+        database_url=db_url,
+    )
+    assert record is not None and record.id is not None
+    row = db_service.list_calls(database_url=db_url)[0]
+    # The instant must survive as the same wall-clock UTC value. Whether the
+    # driver hands it back tz-aware depends on the SQLModel version, so assert
+    # the value, not the tzinfo.
+    assert row.started_at.replace(tzinfo=None) == naive
+    assert row.started_at.utcoffset() in (None, timedelta(0))
+    # ...and the API must always send an explicit offset, or the browser would
+    # read the UTC timestamp as local time and shift every call by the
+    # viewer's own offset.
+    assert iso_utc(row.started_at).endswith("+00:00")
+
+
+def test_closing_a_record_coerces_a_naive_closed_at(db_url):
+    """PATCH /records closes with `datetime.now(timezone.utc)` from the API, but
+    any naive value from a client must not lose the review either."""
+    assessment, answers = _high_assessment()
+    record = db_service.record_call(
+        dialogue=_FakeDialogue(answers),
+        assessment=assessment,
+        provider_call_id="call_close",
+        to_number="+94777000008",
+        ended_reason="dialogue finished",
+        duration_sec=10.0,
+        database_url=db_url,
+    )
+    updated = db_service.update_call(
+        record.id,
+        closed_by="doc1",
+        closed_at=datetime(2026, 10, 4, 7, 30, 0),  # naive
+        reviewed=True,
+        database_url=db_url,
+    )
+    assert updated is not None
+    assert updated.closed_at.replace(tzinfo=None) == datetime(2026, 10, 4, 7, 30, 0)
+    assert updated.reviewed is True
 
 
 def test_record_call_persists_transcript_risk_and_timestamps(db_url):

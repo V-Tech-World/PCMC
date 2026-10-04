@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends
 from app.core import rate_limiter
 from app.core.config import get_settings
 from app.core.security import AuthContext, require_auth
+from app.db.models import iso_utc
 from app.db import service as db_service
 from app.services import alerts as alerts_service
 from app.services import scheduler
@@ -34,7 +35,7 @@ def _recent_call_row(record) -> dict:
         "patient_code": record.patient_code,
         "phone_number": record.phone_number,
         "diagnosis_category": record.diagnosis_category,
-        "started_at": record.started_at.isoformat() if record.started_at else None,
+        "started_at": iso_utc(record.started_at),
         "duration_sec": record.duration_sec,
         "ended_reason": record.ended_reason,
         "risk_level": record.risk_level,
