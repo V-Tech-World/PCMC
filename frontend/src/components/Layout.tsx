@@ -69,6 +69,14 @@ const ICON_USER = (
     <circle cx="12" cy="7" r="4" />
   </>
 );
+/** Patient Details: an ID card (info sheet per patient). */
+const ICON_ID_CARD = (
+  <>
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <circle cx="8.5" cy="11" r="2" />
+    <path d="M13 10h5M13 14h5M5.5 16.5c.7-1.4 1.9-2.1 3-2.1s2.3.7 3 2.1" />
+  </>
+);
 
 interface NavItem {
   to: string;
@@ -82,6 +90,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Dashboard", icon: ICON_GRID, end: true },
   { to: "/calls", label: "Calls", icon: ICON_PHONE },
   { to: "/patients", label: "Patients", icon: ICON_USERS },
+  { to: "/patient-details", label: "Patient Details", icon: ICON_ID_CARD },
   { to: "/schedule", label: "Schedule", icon: ICON_CALENDAR },
   { to: "/staff", label: "Staff", icon: ICON_SHIELD, perm: "manage_staff" },
 ];

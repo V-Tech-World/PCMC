@@ -163,16 +163,16 @@ def build_script(diagnosis_category: str = DEFAULT_CATEGORY) -> list[Question]:
             # FINAL_ANSWER_SEC no matter what, so "we will get back to you"
             # replaces a conversational goodbye.
             #
-            # "after the beep" (2 Oct 2026, from live testing): the question is
+            # "after the tone" (2 Oct 2026, from live testing): the question is
             # long, and without a cue the patient either starts talking over the
             # last words or waits in silence for a prompt that never comes. The
-            # question therefore names the BEEP, and call_flow plays two short
+            # question therefore names the TONE, and call_flow plays two short
             # 1 kHz beeps right before the capture window opens -- the promise
-            # in this sentence is only true because the beep exists.
+            # in this sentence is only true because the tone exists.
             text=(
                 "Final question. Please tell me anything else concerning you "
-                "about your recovery. Please speak clearly after the beep, "
-                "and when you are done, hang up. We will get back to you soon."
+                "about your recovery. Please speak clearly after the tone, "
+                "and when you are done, hang up."
             ),
             kind="open",
         ),

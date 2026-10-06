@@ -31,9 +31,18 @@ const LANGUAGES = [
   { value: "si", label: "Sinhala" },
 ] as const;
 
+/** Keep in step with PATIENT_TITLES / PATIENT_GENDERS in app/api/records.py. */
+const TITLES = ["Mr", "Mrs", "Miss"] as const;
+const GENDERS = ["male", "female", "other"] as const;
+
 const EMPTY_FORM = {
   patient_code: "",
   name: "",
+  /** Demographics (10 Oct 2026): title/gender/age/NIC. age is "" until set. */
+  title: "",
+  gender: "",
+  age: "",
+  nic_number: "",
   phone_number: "",
   diagnosis_category: "general",
   discharge_date: "",
@@ -128,6 +137,10 @@ export default function PatientsPage() {
     setForm({
       patient_code: p.patient_code,
       name: p.name ?? "",
+      title: p.title ?? "",
+      gender: p.gender ?? "",
+      age: p.age == null ? "" : String(p.age),
+      nic_number: p.nic_number ?? "",
       phone_number: p.phone_number ?? "",
       diagnosis_category: p.diagnosis_category || "general",
       discharge_date: p.discharge_date ?? "",
@@ -158,8 +171,12 @@ export default function PatientsPage() {
     setError("");
     try {
       // Same endpoint for create and edit: the backend matches on
-      // patient_code, so an edit updates the record in place.
-      const res = await api.post<{ status: string }>("/records/patients", form);
+      // patient_code, so an edit updates the record in place. The form keeps
+      // age as a string ("" = unknown); the API expects int|null.
+      const res = await api.post<{ status: string }>("/records/patients", {
+        ...form,
+        age: form.age === "" ? null : Number(form.age),
+      });
       toast.ok(
         res.status === "created"
           ? `Patient ${form.patient_code} created.`
@@ -243,6 +260,57 @@ export default function PatientsPage() {
               <input
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+              />
+            </label>
+            <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
+              Title
+              <select
+                value={form.title}
+                onChange={(e) => setForm({ ...form, title: e.target.value })}
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+              >
+                <option value="">(not set)</option>
+                {TITLES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
+              Gender
+              <select
+                value={form.gender}
+                onChange={(e) => setForm({ ...form, gender: e.target.value })}
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+              >
+                <option value="">(not set)</option>
+                {GENDERS.map((g) => (
+                  <option key={g} value={g}>
+                    {g}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
+              Age
+              <input
+                type="number"
+                min={0}
+                max={130}
+                value={form.age}
+                onChange={(e) => setForm({ ...form, age: e.target.value })}
+                placeholder="e.g. 67"
+                className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+              />
+            </label>
+            <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300">
+              NIC number
+              <input
+                value={form.nic_number}
+                onChange={(e) => setForm({ ...form, nic_number: e.target.value })}
+                placeholder="e.g. 199012345678"
                 className="mt-1 w-full rounded-lg border border-neutral-300 dark:border-neutral-600 dark:bg-[#131c33] dark:text-neutral-100 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
               />
             </label>
@@ -437,7 +505,19 @@ export default function PatientsPage() {
                     className="border-b border-neutral-100 dark:border-neutral-700/60 hover:bg-brand-50 dark:hover:bg-white/5"
                   >
                     <td className="px-2 py-2 font-semibold">{p.patient_code}</td>
-                    <td className="px-2 py-2">{p.name || "--"}</td>
+                    <td className="px-2 py-2">
+                      <span className="font-semibold">
+                        {p.title ? `${p.title} ` : ""}
+                        {p.name || "--"}
+                      </span>
+                      {(p.gender || p.age != null) && (
+                        <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+                          {[p.gender, p.age != null ? `${p.age}y` : null]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                      )}
+                    </td>
                     <td className="whitespace-nowrap px-2 py-2">{p.phone_number}</td>
                     <td className="px-2 py-2 capitalize">{p.diagnosis_category}</td>
                     <td className="whitespace-nowrap px-2 py-2">

@@ -77,6 +77,13 @@ class Patient(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     patient_code: str = Field(unique=True, index=True)     # e.g. "P-0001"
     name: str = ""
+    # Demographics (10 Oct 2026): shown on the Patient Details screen and in
+    # the info card. All optional -- rows created before this keep ""/None
+    # until an admin edits them (schema sync adds the columns as NULL/"").
+    title: str = ""           # Mr | Mrs | Miss ("" = not given)
+    gender: str = ""          # male | female | other ("" = not given)
+    age: int | None = None    # None = unknown
+    nic_number: str = ""      # national identity card number
     phone_number: str = ""                                  # E.164, e.g. +9477...
     diagnosis_category: str = "general"                     # dialogue.CATEGORIES key
     discharge_date: str = ""                                # ISO date, free-form

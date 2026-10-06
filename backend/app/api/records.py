@@ -31,12 +31,23 @@ logger = logging.getLogger("voicecare.records")
 
 router = APIRouter(prefix="/records")
 
+# Allowed demographic values (Patient create/edit + Patient Details screen).
+# Empty string is allowed everywhere: "not recorded yet" is legitimate.
+PATIENT_TITLES = ("Mr", "Mrs", "Miss")
+PATIENT_GENDERS = ("male", "female", "other")
+
 
 class PatientUpsert(BaseModel):
     """Create or update a patient (matched on patient_code)."""
 
     patient_code: str = Field(min_length=1, max_length=32)
     name: str = ""
+    # Demographics (10 Oct 2026): validated against the app-wide lists below
+    # so a typo can never reach the Patient Details screen.
+    title: str = ""                     # Mr | Mrs | Miss ("" ok)
+    gender: str = ""                    # male | female | other ("" ok)
+    age: int | None = Field(default=None, ge=0, le=130)
+    nic_number: str = ""
     phone_number: str = ""
     diagnosis_category: str = "general"
     discharge_date: str = ""          # ISO date: YYYY-MM-DD
@@ -121,6 +132,10 @@ def _patient_to_dict(p: Patient) -> dict:
         "id": p.id,
         "patient_code": p.patient_code,
         "name": p.name,
+        "title": p.title,
+        "gender": p.gender,
+        "age": p.age,
+        "nic_number": p.nic_number,
         "phone_number": p.phone_number,
         "diagnosis_category": p.diagnosis_category,
         "discharge_date": p.discharge_date,
@@ -257,6 +272,47 @@ def get_patients(
     return {"count": len(rows), "patients": [_patient_to_dict(p) for p in rows]}
 
 
+@router.get("/patients/{patient_code}")
+def get_patient_detail(
+    patient_code: str, context: AuthContext = Depends(require_auth)
+) -> dict:
+    """Everything the Patient Details screen shows, in one round trip.
+
+    Patient info card + the assigned care team WITH resolved names/roles/
+    emails + the patient's full call history. The staff list endpoint is
+    admin-only, so the username -> name resolution happens here server-side:
+    a nurse can see who looks after a patient without being able to browse
+    the staff directory.
+    """
+    patient = db_service.find_patient(patient_code=patient_code)
+    if patient is None:
+        raise HTTPException(
+            status_code=404, detail=f"No patient with code {patient_code!r}."
+        )
+    known = {u.username: u for u in db_service.list_staff()}
+    care_team: list[dict] = []
+    for username in patient.get_assigned_staff():
+        user = known.get(username)
+        care_team.append(
+            {
+                "username": username,
+                # A deleted account still shows (as the raw username) so the
+                # card never silently drops someone who used to be assigned.
+                "display_name": user.display_name if user else username,
+                "role": user.role if user else "unknown",
+                "email": user.email if user else "",
+                "active": bool(user and user.active),
+            }
+        )
+    calls = db_service.list_calls(limit=200, patient_code=patient.patient_code)
+    return {
+        "patient": _patient_to_dict(patient),
+        "care_team": care_team,
+        "calls": [_record_to_dict(r) for r in calls],
+        "call_count": len(calls),
+    }
+
+
 @router.post("/patients", status_code=201)
 def upsert_patient(
     body: PatientUpsert, context: AuthContext = Depends(require_roles("admin"))
@@ -275,6 +331,16 @@ def upsert_patient(
                 + ", ".join(sorted(DIAGNOSIS_CATEGORIES))
             ),
         )
+    if body.title and body.title not in PATIENT_TITLES:
+        raise HTTPException(
+            status_code=422,
+            detail="title must be one of: " + ", ".join(PATIENT_TITLES),
+        )
+    if body.gender and body.gender not in PATIENT_GENDERS:
+        raise HTTPException(
+            status_code=422,
+            detail="gender must be one of: " + ", ".join(PATIENT_GENDERS),
+        )
     assigned = (
         _validate_assigned_staff(body.assigned_staff)
         if body.assigned_staff is not None
@@ -283,6 +349,10 @@ def upsert_patient(
     action, patient = db_service.upsert_patient(
         patient_code=body.patient_code.strip(),
         name=body.name,
+        title=body.title,
+        gender=body.gender,
+        age=body.age,
+        nic_number=body.nic_number,
         phone_number=body.phone_number,
         diagnosis_category=body.diagnosis_category,
         discharge_date=body.discharge_date,

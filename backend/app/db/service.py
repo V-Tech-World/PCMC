@@ -281,6 +281,10 @@ def upsert_patient(
     *,
     patient_code: str,
     name: str = "",
+    title: str = "",
+    gender: str = "",
+    age: int | None = None,
+    nic_number: str = "",
     phone_number: str = "",
     diagnosis_category: str = "general",
     discharge_date: str = "",
@@ -303,6 +307,10 @@ def upsert_patient(
         ).first()
         if existing:
             existing.name = name
+            existing.title = title
+            existing.gender = gender
+            existing.age = age
+            existing.nic_number = nic_number
             existing.phone_number = phone_number
             existing.diagnosis_category = diagnosis_category
             existing.discharge_date = discharge_date
@@ -319,6 +327,10 @@ def upsert_patient(
         patient = Patient(
             patient_code=patient_code,
             name=name,
+            title=title,
+            gender=gender,
+            age=age,
+            nic_number=nic_number,
             phone_number=phone_number,
             diagnosis_category=diagnosis_category,
             discharge_date=discharge_date,

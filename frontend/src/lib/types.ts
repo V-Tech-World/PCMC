@@ -98,6 +98,14 @@ export interface Patient {
   id: number;
   patient_code: string;
   name: string;
+  /**
+   * 10 Oct 2026 demographics: Mr/Mrs/…, gender, age and national ID, shown
+   * on the Patient Details screen and the register/edit form.
+   */
+  title: string;
+  gender: string;
+  age: number | null;
+  nic_number: string;
   phone_number: string;
   diagnosis_category: string;
   discharge_date: string;
@@ -110,6 +118,23 @@ export interface Patient {
    */
   assigned_staff: string[];
   created_at: string | null;
+}
+
+/** One assigned nurse/doctor with their identity resolved (detail view). */
+export interface CareTeamMember {
+  username: string;
+  display_name: string;
+  role: string;
+  email: string;
+  active: boolean;
+}
+
+/** GET /records/patients/{code} -- the Patient Details screen payload. */
+export interface PatientDetail {
+  patient: Patient;
+  care_team: CareTeamMember[];
+  calls: CallRow[];
+  call_count: number;
 }
 
 export interface ScheduleSlot {

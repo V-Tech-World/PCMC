@@ -7,6 +7,7 @@ import CallsPage from "./pages/CallsPage";
 import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
 import PatientsPage from "./pages/PatientsPage";
+import PatientDetailsPage from "./pages/PatientDetailsPage";
 import SchedulePage from "./pages/SchedulePage";
 import StaffPage from "./pages/StaffPage";
 
@@ -67,6 +68,7 @@ export default function App() {
             <Route index element={<DashboardPage />} />
             <Route path="calls" element={<CallsPage />} />
             <Route path="patients" element={<PatientsPage />} />
+            <Route path="patient-details" element={<PatientDetailsPage />} />
             <Route path="schedule" element={<SchedulePage />} />
             <Route
               path="staff"

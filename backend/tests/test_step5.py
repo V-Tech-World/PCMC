@@ -192,7 +192,7 @@ def patch_stt(transcriber):
 
 def test_final_question_is_open_and_sets_window_expectation():
     """The final question must be an open invitation that tells the patient
-    to speak freely after the beep and hang up when done -- it is captured in
+    to speak freely after the tone and hang up when done -- it is captured in
     a fixed 60 s window, not by the 1.2 s silence detector."""
     script = build_script("general")
     final = next(q for q in script if q.id == FINAL_QUESTION_ID)
@@ -200,10 +200,10 @@ def test_final_question_is_open_and_sets_window_expectation():
     lowered = final.text.lower()
     assert "final question" in lowered
     assert "speak clearly" in lowered
-    # 2 Oct 2026: the question names the beep -- which is why call_flow has to
+    # 2 Oct 2026: the question names the tone -- which is why call_flow has to
     # play one. Keep these two assertions together so the promise and the tone
     # can never drift apart silently.
-    assert "after the beep" in lowered
+    assert "after the tone" in lowered
     assert "hang up" in lowered
     # It must NOT read like the yes/no questions before it.
     assert not lowered.startswith("please answer yes or no")
@@ -501,7 +501,7 @@ def test_run_call_aborts_when_max_duration_reached(tmp_path):
 
 
 def test_run_call_plays_the_beep_before_the_final_answer(tmp_path):
-    """The question says "speak clearly after the beep" -- so a tone must
+    """The question says "speak clearly after the tone" -- so a tone must
     actually reach the provider between the question and the capture window.
 
     Proven on the wire: the same call with BEEP_ENABLED=false sends strictly

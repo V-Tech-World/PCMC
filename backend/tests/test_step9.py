@@ -609,3 +609,143 @@ def test_reset_password_refuses_deactivated_accounts(staff):
     assert client.post("/auth/login", json={
         "username": "nur901", "password": "brand-new-pass",
     }).status_code == 401
+
+
+# ------------------------------------------- Patient demographics (10 Oct)
+def test_patient_demographics_roundtrip_and_validation(staff):
+    """Title/gender/age/NIC save, echo back and are validated at save time."""
+    client = _client()
+    admin_h, _ = _login(client, "adm901", "admin-pass-9")
+
+    created = client.post(
+        "/records/patients",
+        json={
+            "patient_code": "P-905", "name": "Kamal Perera",
+            "phone_number": "+94771000905", "diagnosis_category": "general",
+            "title": "Mr", "gender": "male", "age": 67,
+            "nic_number": "199012345678",
+        },
+        headers=admin_h,
+    )
+    assert created.status_code == 201
+    body = created.json()["patient"]
+    assert body["title"] == "Mr"
+    assert body["gender"] == "male"
+    assert body["age"] == 67
+    assert body["nic_number"] == "199012345678"
+
+    # Edit in place: same endpoint updates the demographics (age unknown ok).
+    edited = client.post(
+        "/records/patients",
+        json={
+            "patient_code": "P-905", "name": "Kamal Perera",
+            "phone_number": "+94771000905", "diagnosis_category": "general",
+            "title": "Mrs", "gender": "female", "age": None,
+            "nic_number": "199012345678",
+        },
+        headers=admin_h,
+    )
+    assert edited.status_code == 201
+    body = edited.json()["patient"]
+    assert (body["title"], body["gender"], body["age"]) == ("Mrs", "female", None)
+    assert body["nic_number"] == "199012345678"     # untouched fields survive
+
+    # Bad values fail at save time (422) -- they never reach the screen.
+    bad_title = client.post(
+        "/records/patients",
+        json={"patient_code": "P-906", "phone_number": "+94771000906",
+              "title": "Lord"},
+        headers=admin_h,
+    )
+    assert bad_title.status_code == 422
+    assert "title" in bad_title.json()["detail"].lower()
+
+    # "Dr"/"Ms" were deliberately dropped from the list (10 Oct 2026).
+    for removed in ("Dr", "Ms"):
+        resp = client.post(
+            "/records/patients",
+            json={"patient_code": "P-906", "phone_number": "+94771000906",
+                  "title": removed},
+            headers=admin_h,
+        )
+        assert resp.status_code == 422, removed
+
+    bad_gender = client.post(
+        "/records/patients",
+        json={"patient_code": "P-907", "phone_number": "+94771000907",
+              "gender": "robot"},
+        headers=admin_h,
+    )
+    assert bad_gender.status_code == 422
+
+    bad_age = client.post(
+        "/records/patients",
+        json={"patient_code": "P-908", "phone_number": "+94771000908",
+              "age": 200},
+        headers=admin_h,
+    )
+    assert bad_age.status_code == 422        # pydantic ge=0 le=130
+
+
+def test_patient_detail_screen_payload(staff):
+    """The Patient Details screen: info card + care-team NAMES + call history."""
+    client = _client()
+    admin_h, _ = _login(client, "adm901", "admin-pass-9")
+    nurse_h, _ = _login(client, "nur901", "nurse-pass-9")
+
+    created = client.post(
+        "/records/patients",
+        json={
+            "patient_code": "P-910", "name": "Sara Fernando",
+            "phone_number": "+94771000910", "diagnosis_category": "cardiac",
+            "title": "Mrs", "gender": "female", "age": 54,
+            "nic_number": "197012345678",
+            "assigned_staff": ["nur901", "doc901"],
+        },
+        headers=admin_h,
+    )
+    assert created.status_code == 201
+
+    # One call belonging to THIS patient (the history on the screen).
+    answers = [
+        {"question_id": "category_cardiac", "kind": "yes_no",
+         "interpretation": True, "transcript": "yes chest pain"},
+    ]
+    record = db_service.record_call(
+        dialogue=_FakeDialogue(answers),
+        assessment=assess_conversation(answers),
+        provider_call_id="ca_p910", to_number="+94771000910",
+        patient_code="P-910", ended_reason="dialogue finished",
+        duration_sec=42.0,
+    )
+    assert record is not None
+
+    # A nurse can read it (the staff list itself stays admin-only: the
+    # username -> display-name resolution happens server-side here).
+    resp = client.get("/records/patients/P-910", headers=nurse_h)
+    assert resp.status_code == 200
+    data = resp.json()
+
+    patient = data["patient"]
+    assert patient["title"] == "Mrs"
+    assert patient["age"] == 54
+    assert patient["nic_number"] == "197012345678"
+
+    # Care team resolved to display names + roles + emails, not just usernames.
+    team = {m["username"]: m for m in data["care_team"]}
+    assert set(team) == {"nur901", "doc901"}
+    assert team["nur901"]["role"] == "nurse"
+    assert team["doc901"]["role"] == "doctor"
+    assert team["nur901"]["display_name"] == "nur901"
+    assert team["nur901"]["email"] == "nur901@hospital.test"
+    assert team["doc901"]["active"] is True
+
+    assert data["call_count"] == 1
+    assert data["calls"][0]["provider_call_id"] == "ca_p910"
+    assert data["calls"][0]["patient_code"] == "P-910"
+
+    # Auth still required, unknown code still 404.
+    assert client.get("/records/patients/P-910").status_code == 401
+    assert client.get(
+        "/records/patients/P-404", headers=nurse_h
+    ).status_code == 404
