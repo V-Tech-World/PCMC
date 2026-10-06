@@ -104,6 +104,11 @@ export interface Patient {
   notes: string;
   language_pref: string;
   active: boolean;
+  /**
+   * 5 Oct 2026: the nurse(s) + doctor(s) assigned at registration.
+   * A HIGH-risk call emails exactly these people (always).
+   */
+  assigned_staff: string[];
   created_at: string | null;
 }
 
@@ -189,12 +194,10 @@ export interface DashboardSummary {
     delivery: string;
     channel: string;
     conversation_configured: boolean;
-    /** 4 Oct 2026: the second channel -- named staff, routed on risk score. */
+    /** 4 Oct 2026: the second channel -- named staff, the assigned care team. */
     email_enabled: boolean;
     email_configured: boolean;
     email_sender: string;
-    /** Above this score doctors are emailed too (nurses always are). */
-    doctor_score_threshold: number;
   };
   cost_rails: {
     max_call_duration_sec: number;

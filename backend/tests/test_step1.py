@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import math
 import struct
 import tempfile
@@ -269,6 +270,130 @@ def test_calls_failure_revokes_token(monkeypatch, client):
     assert resp.status_code == 502
     assert "bad key" in resp.json()["detail"]
     assert media_auth.active_token_count() == 0  # token cleaned up on failure
+
+
+def test_calls_refuse_placeholder_from_number(monkeypatch, client):
+    """FROM_NUMBER must be real E.164 before we dial.
+
+    A placeholder like .env.example's +1888XXXXXXX is non-empty, so it used to
+    reach Zernio, which then falls back to the account's DEFAULT caller ID --
+    the patient sees a local number instead of the toll-free line. Refuse to
+    dial at all (503) rather than place a call from the wrong number.
+    """
+    monkeypatch.setenv("FROM_NUMBER", "+1888XXXXXXX")
+    get_settings.cache_clear()
+
+    def fail_post(*args, **kwargs):
+        raise AssertionError("must not dial with a placeholder FROM_NUMBER")
+
+    monkeypatch.setattr(outbound_call.requests, "post", fail_post)
+    resp = client.post(
+        "/calls",
+        json={"phone_number": "+94771234567"},
+        headers={"X-Api-Key": "test-calls-key"},
+    )
+    assert resp.status_code == 503
+    assert "FROM_NUMBER" in resp.json()["detail"]
+    # no token is reserved when we refuse before dialling
+    assert media_auth.active_token_count() == 0
+
+
+def test_calls_refuse_placeholder_stream_url(monkeypatch, client):
+    """A placeholder PUBLIC_WSS_URL must 503 instead of dialling.
+
+    wss://<ngrok-url>/media-stream passes the startswith/endswith checks but
+    points nowhere: Zernio would play the greeting and then never open the
+    media WebSocket -- the 'greeting, then no agent voice' failure. Fail fast.
+    """
+    monkeypatch.setenv("PUBLIC_WSS_URL", "wss://<ngrok-url>/media-stream")
+    get_settings.cache_clear()
+
+    def fail_post(*args, **kwargs):
+        raise AssertionError("must not dial with a placeholder PUBLIC_WSS_URL")
+
+    monkeypatch.setattr(outbound_call.requests, "post", fail_post)
+    resp = client.post(
+        "/calls",
+        json={"phone_number": "+94771234567"},
+        headers={"X-Api-Key": "test-calls-key"},
+    )
+    assert resp.status_code == 503
+    assert "PUBLIC_WSS_URL" in resp.json()["detail"]
+    assert media_auth.active_token_count() == 0
+
+
+def test_calls_warn_when_provider_used_a_different_caller_id(monkeypatch, client):
+    """If Zernio echoes a `from` != FROM_NUMBER, log a loud warning.
+
+    That mismatch IS the 'calls arrive from a local number' mystery: the
+    provider fell back to the account default. The log line is the signal
+    that tells an operator to fix .env / the Zernio dashboard.
+    """
+    captured: dict = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["payload"] = json
+        return _FakeResponse(
+            200,
+            {
+                "success": True,
+                "callId": "cc_cid1",
+                "status": "dialing",
+                "from": "+94110000001",  # NOT the configured +18005551000
+            },
+        )
+
+    monkeypatch.setattr(outbound_call.requests, "post", fake_post)
+
+    messages: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    logger = logging.getLogger("voicecare.outbound")
+    handler = _Capture()
+    logger.addHandler(handler)
+    try:
+        resp = client.post(
+            "/calls",
+            json={"phone_number": "+94771234567"},
+            headers={"X-Api-Key": "test-calls-key"},
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    assert resp.status_code == 201
+    assert captured["payload"]["fromNumber"] == "+18005551000"
+    assert any("Caller ID mismatch" in m for m in messages), messages
+
+    # ...and when provider and .env agree (no `from` echoed, or matching),
+    # no warning is emitted.
+    messages.clear()
+
+    def agree_post(url, headers=None, json=None, timeout=None):
+        return _FakeResponse(
+            200,
+            {
+                "success": True,
+                "callId": "cc_cid2",
+                "status": "dialing",
+                "from": "+18005551000",
+            },
+        )
+
+    monkeypatch.setattr(outbound_call.requests, "post", agree_post)
+    logger.addHandler(handler)
+    try:
+        resp = client.post(
+            "/calls",
+            json={"phone_number": "+94771234567"},
+            headers={"X-Api-Key": "test-calls-key"},
+        )
+    finally:
+        logger.removeHandler(handler)
+    assert resp.status_code == 201
+    assert not [m for m in messages if "Caller ID mismatch" in m], messages
 
 
 # --------------------------------------------------- call status + diagnostics

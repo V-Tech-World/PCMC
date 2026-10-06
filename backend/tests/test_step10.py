@@ -1,15 +1,27 @@
 """
-Step 10 tests: staff-targeted email alerts for HIGH-risk calls (4 Oct 2026).
+Step 10 tests: staff-targeted email alerts for HIGH-risk calls (5 Oct 2026).
 
-A HIGH-risk call now reaches named people, chosen by RISK SCORE:
+A HIGH-risk call is emailed to the patient's ASSIGNED care team -- the
+nurse(s) and doctor(s) picked when the patient is registered (Patients
+screen), in addition to the existing WhatsApp alert, which is unchanged:
 
-    score <  ALERT_DOCTOR_SCORE_THRESHOLD  -> active nurses
-    score >= ALERT_DOCTOR_SCORE_THRESHOLD  -> active nurses AND active doctors
+    patient has an assigned care team -> those nurses AND doctors (always)
+    patient has nobody assigned       -> NO email; an explicit
+                                         `no_assignment` note lands on the
+                                         call row
 
-...in addition to the existing WhatsApp alert, which is unchanged.
+There is no score threshold: who to wake up is a care-team decision made at
+registration, not a cut-off. Admins are never emailed. An assigned account
+that has since been deleted or deactivated is recorded per person as
+`no_route` instead of being dropped silently.
 
-    TC1  routing  -- the threshold really decides who is emailed, and admins and
-                     deactivated accounts are never pulled in
+    TC1  routing  -- only the assigned team is emailed (nurses AND doctors,
+                      always); nobody assigned -> a visible note, never
+                      silence; unknown/deactivated/admin assignments are
+                      reported per person, not dropped
+    TC1b assign   -- the Patients API stores/validates the care team on
+                      create AND edit (unknown role, unknown user, inactive
+                      account all rejected; clearing works)
     TC2  content  -- the message names the patient, the risk and the symptoms
     TC3  delivery -- one mail per recipient, and one bad address neither stops
                      the others nor loses the alert itself
@@ -89,7 +101,6 @@ def _settings(**overrides) -> Settings:
         email_alerts_enabled=True,
         sender_email="alerts@voicecare.test",
         google_app_password="app-password-not-real",
-        alert_doctor_score_threshold=6.0,
     )
     defaults.update(overrides)
     return Settings(_env_file=None, **defaults)
@@ -100,6 +111,23 @@ def _staff(role: str, username: str, email: str = ""):
         username=username, password=f"{username}-pass-10", role=role,
         display_name=username, email=email,
     )
+
+
+def _patient(code: str = "P-7070", team: list[str] | None = None):
+    """A persisted patient with (by default) a nurse + doctor care team.
+
+    Pass team=[] for "nobody assigned", or team=None to use the default
+    two-person team. Returns the fresh row.
+    """
+    members = ["nurse10", "doc10"] if team is None else list(team)
+    _action, patient = db_service.upsert_patient(
+        patient_code=code,
+        name=f"Patient {code}",
+        phone_number="+94777007070",
+        diagnosis_category="cardiac",
+        assigned_staff=members,
+    )
+    return patient
 
 
 def _deactivate(username: str) -> None:
@@ -173,7 +201,15 @@ class _FakeDialogue:
 
 
 def _seed_high_call_row() -> int:
-    """A real persisted HIGH-risk row, for the storage + API tests."""
+    """A real persisted HIGH-risk row, for the storage + API tests.
+
+    The row is linked to a persisted patient (same phone number) carrying
+    the default nurse + doctor team, exactly like a real call: the alert
+    path looks the team up off the patient row, never off thin air.
+    """
+    _staff("nurse", "nurse10", "nurse10@hospital.test")
+    _staff("doctor", "doc10", "doc10@hospital.test")
+    _patient(code="P-7070")
     answers = [
         {"question_id": "medication", "kind": "yes_no",
          "interpretation": True, "transcript": "no I forgot"},
@@ -196,89 +232,229 @@ def _seed_high_call_row() -> int:
 # --------------------------------------------------------------- TC1: routing
 
 
-@pytest.mark.parametrize(
-    "score,expected",
-    [
-        (0.0, ("nurse",)),
-        (5.0, ("nurse",)),
-        (5.99, ("nurse",)),         # BELOW the threshold the nurse on call owns it
-        (6.0, ("nurse", "doctor")),  # AT the threshold the doctor is pulled in
-        (6.01, ("nurse", "doctor")),
-        (12.0, ("nurse", "doctor")),
-    ],
-)
-def test_threshold_decides_which_roles_are_routed(score, expected):
-    """TC1: the one rule this feature turns on, pinned at the boundary."""
-    assert email_alerts.routed_roles(score, _settings()) == expected
-
-
-def test_routing_reads_the_configured_threshold():
-    """The cut-off is configurable, not baked in at 6."""
-    settings = _settings(alert_doctor_score_threshold=9.0)
-    assert email_alerts.routed_roles(6.5, settings) == ("nurse",)
-    assert email_alerts.routed_roles(9.5, settings) == ("nurse", "doctor")
-
-
-def test_a_nurse_call_emails_only_nurses(sent):
-    """Below the threshold a doctor is not woken up."""
+def test_assigned_team_is_emailed_nurses_and_doctors_always(sent):
+    """TC1: the assigned nurse(s) AND doctor(s) all hear, every time."""
     _staff("nurse", "nurse10", "nurse10@hospital.test")
+    _staff("nurse", "nurse11", "nurse11@hospital.test")
     _staff("doctor", "doc10", "doc10@hospital.test")
-    _staff("admin", "adm10", "adm10@hospital.test")
+    _staff("admin", "adm10", "adm10@hospital.test")  # never emailed
+    patient = _patient(team=["nurse10", "nurse11", "doc10"])
 
-    outcome = email_alerts.deliver_alert_emails(_FakeCall(score=5.0), None, _settings())
+    outcome = email_alerts.deliver_alert_emails(_FakeCall(), patient, _settings())
+
+    # Doctors first, then nurses, then by employee ID. Admins never routed.
+    assert [r["username"] for r in outcome] == ["doc10", "nurse10", "nurse11"]
+    assert [r["role"] for r in outcome] == ["doctor", "nurse", "nurse"]
+    assert [m["to"] for m in sent] == [
+        "doc10@hospital.test",
+        "nurse10@hospital.test",
+        "nurse11@hospital.test",
+    ]
+
+
+def test_only_the_assigned_team_hears_not_everyone_on_staff(sent):
+    """TC1: unassigned staff are NOT emailed -- the team owns this patient."""
+    _staff("nurse", "nurse10", "nurse10@hospital.test")
+    _staff("nurse", "bystander", "bystander@hospital.test")
+    _staff("doctor", "doc10", "doc10@hospital.test")
+    _staff("doctor", "stranger", "stranger@hospital.test")
+    patient = _patient(team=["nurse10"])
+
+    outcome = email_alerts.deliver_alert_emails(_FakeCall(), patient, _settings())
 
     assert [r["username"] for r in outcome] == ["nurse10"]
     assert [m["to"] for m in sent] == ["nurse10@hospital.test"]
 
 
-def test_a_doctor_call_emails_nurses_and_doctors_but_never_admins(sent):
-    """Above the threshold the whole on-call team hears, admins excluded."""
-    _staff("nurse", "nurse10", "nurse10@hospital.test")
-    _staff("nurse", "nurse11", "nurse11@hospital.test")
-    _staff("doctor", "doc10", "doc10@hospital.test")
-    _staff("admin", "adm10", "adm10@hospital.test")
-
-    outcome = email_alerts.deliver_alert_emails(_FakeCall(score=9.0), None, _settings())
-
-    # Doctors first, then nurses, then by employee ID.
-    assert [r["username"] for r in outcome] == ["doc10", "nurse10", "nurse11"]
-    assert [r["role"] for r in outcome] == ["doctor", "nurse", "nurse"]
-    assert len(sent) == 3
-
-
-def test_deactivated_staff_are_not_emailed(sent):
-    """A nurse who has left must not be paged."""
+def test_deactivated_assignee_is_reported_not_dropped(sent):
+    """TC1: an assigned nurse who has left is named on the row, not skipped."""
     _staff("nurse", "nurse10", "nurse10@hospital.test")
     _staff("nurse", "nurse11", "nurse11@hospital.test")
     _deactivate("nurse11")
+    patient = _patient(team=["nurse10", "nurse11"])
 
-    outcome = email_alerts.deliver_alert_emails(_FakeCall(score=5.0), None, _settings())
+    outcome = email_alerts.deliver_alert_emails(_FakeCall(), patient, _settings())
 
-    assert [r["username"] for r in outcome] == ["nurse10"]
+    assert [r["username"] for r in outcome] == ["nurse10", "nurse11"]
+    assert outcome[0]["status"] == email_alerts.STATUS_SENT
+    assert outcome[1]["status"].startswith("no_route:")
+    assert [m["to"] for m in sent] == ["nurse10@hospital.test"]
 
 
-def test_a_high_call_with_no_reachable_staff_records_a_visible_note(sent):
-    """Nobody on the staff list -> a no_route note ON THE ROW, never silent.
+def test_deleted_assignee_is_reported_not_dropped(sent):
+    """TC1: an assigned doctor deleted after registration still shows up."""
+    _staff("nurse", "nurse10", "nurse10@hospital.test")
+    patient = _patient(team=["nurse10", "ghostdoc"])
+
+    outcome = email_alerts.deliver_alert_emails(_FakeCall(), patient, _settings())
+
+    assert [r["username"] for r in outcome] == ["nurse10", "ghostdoc"]
+    assert outcome[0]["status"] == email_alerts.STATUS_SENT
+    assert outcome[1]["status"].startswith("no_route:")
+    assert [m["to"] for m in sent] == ["nurse10@hospital.test"]
+
+
+def test_patient_with_no_team_records_a_visible_note(sent):
+    """TC1: nobody assigned -> a no_assignment note ON THE ROW, never silent.
 
     [] here is exactly the bug being fixed: the dashboard shows nothing while
     WhatsApp shows "sent", so nobody knows the escalation died.
     """
-    outcome = email_alerts.deliver_alert_emails(
-        _FakeCall(score=9.0), None, _settings()
-    )
+    _staff("nurse", "nurse10", "nurse10@hospital.test")
+    patient = _patient(team=[])
+
+    outcome = email_alerts.deliver_alert_emails(_FakeCall(), patient, _settings())
+
     assert len(outcome) == 1
-    assert outcome[0]["status"].startswith("no_route:")
+    assert outcome[0]["status"].startswith("no_assignment")
+    assert sent == []
+
+
+def test_patient_without_a_row_records_a_visible_note(sent):
+    """TC1: an unknown patient (no row to carry a team) is equally explicit."""
+    _staff("nurse", "nurse10", "nurse10@hospital.test")
+
+    outcome = email_alerts.deliver_alert_emails(_FakeCall(), None, _settings())
+
+    assert len(outcome) == 1
+    assert outcome[0]["status"].startswith("no_assignment")
     assert sent == []
 
 
 def test_non_high_risk_is_never_emailed(sent):
     """Step 7 TC2 still holds for the new channel: low/medium stay silent."""
     _staff("nurse", "nurse10", "nurse10@hospital.test")
+    patient = _patient()
     for level in ("low", "medium", "unknown"):
         assert email_alerts.deliver_alert_emails(
-            _FakeCall(score=9.0, level=level), None, _settings()
+            _FakeCall(level=level), patient, _settings()
         ) == []
     assert sent == []
+
+
+# --------------------------------------- TC1b: the assignment API itself
+
+
+def _admin_client():
+    """A TestClient logged in as an admin (owns patient management).
+
+    Creates the account directly (the suite runs on a fresh in-memory DB
+    per test, so no seeded admin exists here) and logs in through the
+    real /auth/login endpoint.
+    """
+    _staff("admin", "admin10", "admin10@hospital.test")
+    client = _client()
+    resp = client.post(
+        "/auth/login",
+        json={"username": "admin10", "password": "admin10-pass-10"},
+    )
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["access_token"]
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    return client
+
+
+def _patient_payload(code: str, team: list[str] | None) -> dict:
+    payload: dict = {
+        "patient_code": code,
+        "name": f"Patient {code}",
+        "phone_number": "+94777007070",
+        "diagnosis_category": "cardiac",
+        "discharge_date": "",
+        "notes": "",
+        "language_pref": "en",
+        "active": True,
+    }
+    if team is not None:
+        payload["assigned_staff"] = team
+    return payload
+
+
+def test_create_patient_with_care_team_stores_it():
+    """TC1b: assigning nurse(s) + doctor(s) at registration persists."""
+    _staff("nurse", "nurse10", "nurse10@hospital.test")
+    _staff("doctor", "doc10", "doc10@hospital.test")
+    client = _admin_client()
+
+    resp = client.post(
+        "/records/patients",
+        json=_patient_payload("P-7070", ["nurse10", "doc10"]),
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["patient"]["assigned_staff"] == ["nurse10", "doc10"]
+    listed = client.get("/records/patients").json()["patients"]
+    assert [p for p in listed if p["patient_code"] == "P-7070"][0][
+        "assigned_staff"
+    ] == ["nurse10", "doc10"]
+
+
+def test_edit_patient_can_change_the_care_team():
+    """TC1b: the SAME endpoint updates the team (Edit button in the UI)."""
+    _staff("nurse", "nurse10", "nurse10@hospital.test")
+    _staff("nurse", "nurse11", "nurse11@hospital.test")
+    _staff("doctor", "doc10", "doc10@hospital.test")
+    client = _admin_client()
+    assert client.post(
+        "/records/patients", json=_patient_payload("P-7070", ["nurse10"])
+    ).status_code == 201
+
+    resp = client.post(
+        "/records/patients",
+        json=_patient_payload("P-7070", ["nurse11", "doc10"]),
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["status"] == "updated"
+    assert resp.json()["patient"]["assigned_staff"] == ["nurse11", "doc10"]
+
+
+def test_edit_patient_without_a_team_leaves_it_untouched():
+    """TC1b: omitting the field on edit must NOT wipe the team."""
+    _staff("nurse", "nurse10", "nurse10@hospital.test")
+    client = _admin_client()
+    assert client.post(
+        "/records/patients", json=_patient_payload("P-7070", ["nurse10"])
+    ).status_code == 201
+
+    resp = client.post(
+        "/records/patients", json=_patient_payload("P-7070", None)
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert "assigned_staff" not in _patient_payload("P-7070", None)
+    assert resp.json()["patient"]["assigned_staff"] == ["nurse10"]
+
+
+def test_edit_patient_can_clear_the_care_team():
+    """TC1b: [] explicitly clears (patient opts out of email alerts)."""
+    _staff("nurse", "nurse10", "nurse10@hospital.test")
+    client = _admin_client()
+    assert client.post(
+        "/records/patients", json=_patient_payload("P-7070", ["nurse10"])
+    ).status_code == 201
+
+    resp = client.post("/records/patients", json=_patient_payload("P-7070", []))
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["patient"]["assigned_staff"] == []
+
+
+def test_assign_unknown_or_wrong_role_or_inactive_is_rejected():
+    """TC1b: typos fail at SAVE time (422), not at the next HIGH-risk call."""
+    _staff("nurse", "nurse10", "nurse10@hospital.test")
+    _staff("admin", "adm10", "adm10@hospital.test")
+    _staff("nurse", "gone10", "gone10@hospital.test")
+    _deactivate("gone10")
+    client = _admin_client()
+
+    for bad_team in (["ghost"], ["adm10"], ["gone10"], ["nurse10", "ghost"]):
+        resp = client.post(
+            "/records/patients",
+            json=_patient_payload("P-7070", bad_team),
+        )
+        assert resp.status_code == 422, f"{bad_team} was accepted"
+        assert "assigned_staff" in resp.json()["detail"].lower()
 
 
 # -------------------------------------------------- TC2: what the email says
@@ -287,8 +463,9 @@ def test_non_high_risk_is_never_emailed(sent):
 def test_email_carries_patient_risk_and_symptoms(sent):
     """TC2: patient code, risk level, symptoms and the answers are all there."""
     _staff("nurse", "nurse10", "nurse10@hospital.test")
+    patient = _patient()
 
-    email_alerts.deliver_alert_emails(_FakeCall(), None, _settings())
+    email_alerts.deliver_alert_emails(_FakeCall(), patient, _settings())
 
     assert len(sent) == 1
     mail = sent[0]
@@ -315,7 +492,7 @@ def test_email_carries_patient_risk_and_symptoms(sent):
 
 def test_email_html_escapes_patient_supplied_text():
     """A transcript is free text from a patient -- escape it into the HTML."""
-    record = _FakeCall(score=5.0)
+    record = _FakeCall()
     record._answers = [
         {"question_id": "note", "kind": "free_text",
          "interpretation": None, "transcript": "<b>chest</b> & pain"},
@@ -334,8 +511,9 @@ def test_every_recipient_gets_their_own_message(sent):
     _staff("nurse", "nurse10", "nurse10@hospital.test")
     _staff("nurse", "nurse11", "nurse11@hospital.test")
     _staff("doctor", "doc10", "doc10@hospital.test")
+    patient = _patient(team=["nurse10", "nurse11", "doc10"])
 
-    outcome = email_alerts.deliver_alert_emails(_FakeCall(score=9.0), None, _settings())
+    outcome = email_alerts.deliver_alert_emails(_FakeCall(), patient, _settings())
 
     assert sorted(m["to"] for m in sent) == sorted(
         ["nurse10@hospital.test", "nurse11@hospital.test", "doc10@hospital.test"]
@@ -347,6 +525,7 @@ def test_one_bad_address_does_not_stop_the_rest(monkeypatch):
     """TC3: a failed send is isolated and reported per recipient."""
     _staff("nurse", "nurse10", "nurse10@hospital.test")
     _staff("nurse", "nurse11", "nurse11@hospital.test")
+    patient = _patient(team=["nurse10", "nurse11"])
     attempted: list[str] = []
 
     def _flaky(to_email, subject, text_body, html_body, settings=None):
@@ -356,7 +535,7 @@ def test_one_bad_address_does_not_stop_the_rest(monkeypatch):
         return None
 
     monkeypatch.setattr(email_alerts, "send_email", _flaky)
-    outcome = email_alerts.deliver_alert_emails(_FakeCall(score=5.0), None, _settings())
+    outcome = email_alerts.deliver_alert_emails(_FakeCall(), patient, _settings())
 
     # The second recipient was still attempted after the first one failed.
     assert attempted == ["nurse10@hospital.test", "nurse11@hospital.test"]
@@ -370,8 +549,9 @@ def test_staff_without_a_mailbox_is_reported_not_dropped(sent):
     """An account we cannot reach is named on the row, not silently skipped."""
     _staff("nurse", "nurse10")                      # no email
     _staff("nurse", "nurse11", "nurse11@hospital.test")
+    patient = _patient(team=["nurse10", "nurse11"])
 
-    outcome = email_alerts.deliver_alert_emails(_FakeCall(score=5.0), None, _settings())
+    outcome = email_alerts.deliver_alert_emails(_FakeCall(), patient, _settings())
 
     assert [r["username"] for r in outcome] == ["nurse10", "nurse11"]
     assert outcome[0]["status"] == email_alerts.STATUS_NO_EMAIL
@@ -384,9 +564,10 @@ def test_unconfigured_mailbox_records_recipients_and_sends_nothing(sent):
     have been. This is the mode where an alert goes missing quietly, so it is
     recorded loudly."""
     _staff("nurse", "nurse10", "nurse10@hospital.test")
+    patient = _patient(team=["nurse10"])
 
     outcome = email_alerts.deliver_alert_emails(
-        _FakeCall(score=5.0), None,
+        _FakeCall(), patient,
         _settings(sender_email="", google_app_password=""),
     )
 
@@ -398,9 +579,10 @@ def test_unconfigured_mailbox_records_recipients_and_sends_nothing(sent):
 def test_disabled_switch_records_recipients_and_sends_nothing(sent):
     """EMAIL_ALERTS_ENABLED=false turns the channel off, not the bookkeeping."""
     _staff("nurse", "nurse10", "nurse10@hospital.test")
+    patient = _patient(team=["nurse10"])
 
     outcome = email_alerts.deliver_alert_emails(
-        _FakeCall(score=5.0), None, _settings(email_alerts_enabled=False)
+        _FakeCall(), patient, _settings(email_alerts_enabled=False)
     )
 
     assert sent == []
@@ -432,12 +614,12 @@ def test_email_shape_check(value, ok):
 
 def test_recipients_are_stored_on_the_call_row(sent):
     """TC4: the row answers "did the right people hear?"."""
-    _staff("nurse", "nurse10", "nurse10@hospital.test")
-    _staff("doctor", "doc10", "doc10@hospital.test")
     call_id = _seed_high_call_row()
     record = db_service.get_call(call_id)
+    # The seeded row dialed the patient's number, so the lookup links it.
+    patient = db_service.find_patient(phone_number=record.phone_number)
 
-    recipients = email_alerts.deliver_alert_emails(record, None, _settings())
+    recipients = email_alerts.deliver_alert_emails(record, patient, _settings())
     db_service.attach_alert(
         call_id, "ready", detail="prepared", message="alert text",
         recipients=recipients,
@@ -464,7 +646,6 @@ def test_recipient_json_survives_a_round_trip():
 
 def test_call_detail_endpoint_exposes_recipients(sent, configured_mailbox):
     """The Calls screen reads `alert_recipients` off the payload."""
-    _staff("nurse", "nurse10", "nurse10@hospital.test")
     call_id = _seed_high_call_row()
 
     client = _client()
@@ -472,15 +653,29 @@ def test_call_detail_endpoint_exposes_recipients(sent, configured_mailbox):
     assert re_sent.status_code == 200, re_sent.text
     payload = re_sent.json()["call"]
 
-    assert [r["username"] for r in payload["alert_recipients"]] == ["nurse10"]
-    assert payload["alert_recipients"][0]["status"] == email_alerts.STATUS_SENT
-    assert payload["alert_recipients"][0]["email"] == "nurse10@hospital.test"
+    assert [r["username"] for r in payload["alert_recipients"]] == [
+        "doc10",
+        "nurse10",
+    ]
+    assert all(
+        r["status"] == email_alerts.STATUS_SENT
+        for r in payload["alert_recipients"]
+    )
+    assert {
+        r["username"]: r["email"] for r in payload["alert_recipients"]
+    } == {
+        "doc10": "doc10@hospital.test",
+        "nurse10": "nurse10@hospital.test",
+    }
 
     # ...and the detail + list endpoints carry it too.
     detail = client.get(f"/records/calls/{call_id}", headers=API_KEY_HEADERS).json()
-    assert detail["alert_recipients"][0]["username"] == "nurse10"
+    assert [r["username"] for r in detail["alert_recipients"]] == ["doc10", "nurse10"]
     listed = client.get("/records/calls?limit=5", headers=API_KEY_HEADERS).json()
-    assert listed["calls"][0]["alert_recipients"][0]["username"] == "nurse10"
+    assert [r["username"] for r in listed["calls"][0]["alert_recipients"]] == [
+        "doc10",
+        "nurse10",
+    ]
 
 
 def test_dashboard_summary_reports_the_email_channel():
@@ -490,7 +685,7 @@ def test_dashboard_summary_reports_the_email_channel():
     alerts = summary.json()["alerts"]
     assert "email_enabled" in alerts
     assert "email_configured" in alerts
-    assert alerts["doctor_score_threshold"] == 6.0
+    assert "doctor_score_threshold" not in alerts  # assignment routing has no cut-off
     # conftest pins the credentials empty, so the channel is not configured.
     assert alerts["email_configured"] is False
 
@@ -525,7 +720,7 @@ def test_staff_account_is_refused_without_a_usable_email():
 
 def test_boot_purge_drops_unreachable_staff_but_keeps_the_super_admin():
     """TC5: a nurse/doctor with no mailbox is removed at boot (idempotent);
-    the super-admin is exempt because it is never score-routed."""
+    the super-admin is exempt because it is never assigned to a patient."""
     _staff("admin", "admin10")                                  # no email: kept
     _staff("nurse", "legacy10")                                 # no email: removed
     _staff("doctor", "legacy11")                                # no email: removed

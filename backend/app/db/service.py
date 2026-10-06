@@ -287,9 +287,15 @@ def upsert_patient(
     notes: str = "",
     language_pref: str = "en",
     active: bool = True,
+    assigned_staff: list[str] | None = None,
     database_url: str | None = None,
 ) -> tuple[str, Patient]:
-    """Create or update the patient with this code. Returns (action, patient)."""
+    """Create or update the patient with this code. Returns (action, patient).
+
+    assigned_staff: the care team for HIGH-risk alert emails. None = leave the
+    current assignment unchanged (API clients that omit the field); a list --
+    including [] -- replaces it.
+    """
     init_db(database_url)
     with new_session(database_url) as session:
         existing = session.exec(
@@ -303,6 +309,8 @@ def upsert_patient(
             existing.notes = notes
             existing.language_pref = language_pref
             existing.active = active
+            if assigned_staff is not None:
+                existing.set_assigned_staff(list(assigned_staff))
             session.add(existing)
             session.commit()
             session.refresh(existing)
@@ -318,6 +326,7 @@ def upsert_patient(
             language_pref=language_pref,
             active=active,
         )
+        patient.set_assigned_staff(list(assigned_staff or []))
         session.add(patient)
         session.commit()
         session.refresh(patient)

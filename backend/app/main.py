@@ -137,14 +137,13 @@ async def lifespan(app: FastAPI):
     #   1. report whether the mailbox is usable, because a silently
     #      unconfigured sender is exactly how an escalation goes missing;
     #   2. drop accounts that can never be alerted (no email address), keeping
-    #      super-admins -- they are never score-routed.
+    #      super-admins -- they are never assigned to a patient.
     if settings.email_alerts_enabled and email_alerts_service.email_alerts_configured(
         settings
     ):
         log.info(
-            "  Staff email alerts: ON (from=%s, doctors at/above score %s)",
+            "  Staff email alerts: ON (from=%s, routed per patient's assigned care team)",
             settings.sender_email,
-            settings.alert_doctor_score_threshold,
         )
     else:
         log.warning(

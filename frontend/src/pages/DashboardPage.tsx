@@ -95,8 +95,9 @@ function AlertEmailStatus({
     <Card title="Email alerts">
       <p className="text-sm text-neutral-600 dark:text-neutral-300">
         On — HIGH-risk emails go out from{" "}
-        <span className="font-semibold">{alerts.email_sender}</span> to nurses
-        (score below {alerts.doctor_score_threshold}) and nurses + doctors (at/above).
+        <span className="font-semibold">{alerts.email_sender}</span> to each
+        patient&apos;s assigned care team (the nurse(s) and doctor(s) picked on
+        the Patients screen).
       </p>
     </Card>
   );

@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import type { DialResponse, Patient, ScheduleBoard } from "../lib/types";
+import type {
+  DialResponse,
+  Patient,
+  ScheduleBoard,
+  StaffUser,
+} from "../lib/types";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { useToast } from "../components/Toast";
 import { Banner, Card, EmptyState, Spinner, fmtDate } from "../components/ui";
@@ -35,6 +40,8 @@ const EMPTY_FORM = {
   notes: "",
   language_pref: "en",
   active: true,
+  /** Staff usernames: the nurse(s) + doctor(s) emailed on HIGH risk. */
+  assigned_staff: [] as string[],
 };
 
 /**
@@ -62,6 +69,14 @@ export default function PatientsPage() {
   const [dialTarget, setDialTarget] = useState<Patient | null>(null);
   const [dialBusy, setDialBusy] = useState(false);
 
+  /**
+   * Nurses + doctors available for assignment. Loaded alongside the
+   * patients (admin-only endpoint -- a nurse sees an empty list and a hint
+   * instead of a 403). The backend re-validates every save, so a stale row
+   * here can never silently drop someone from the alerts.
+   */
+  const [careTeam, setCareTeam] = useState<StaffUser[]>([]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -74,6 +89,18 @@ export default function PatientsPage() {
       const map: Record<string, string | null> = {};
       for (const row of s.patients) map[row.patient_code] = row.next_call_at;
       setNextCalls(map);
+      try {
+        const staff = await api.get<{ staff: StaffUser[] }>("/auth/staff");
+        setCareTeam(
+          staff.staff.filter(
+            (u) => u.active && (u.role === "nurse" || u.role === "doctor"),
+          ),
+        );
+      } catch {
+        // Non-admins cannot list staff: leave the picker empty (the create /
+        // edit form is admin-gated anyway) rather than failing the page.
+        setCareTeam([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load patients.");
     } finally {
@@ -107,6 +134,8 @@ export default function PatientsPage() {
       notes: p.notes ?? "",
       language_pref: p.language_pref || "en",
       active: p.active ?? true,
+      /** Edit uses the same form: what is saved here is who gets emailed. */
+      assigned_staff: [...(p.assigned_staff ?? [])],
     });
     setEditing(p.patient_code);
     setShowForm(true);
@@ -280,6 +309,62 @@ export default function PatientsPage() {
               />
               Active (uncheck for a discharged/archived patient)
             </label>
+            {/*
+             * Care team: the nurse(s) + doctor(s) emailed on HIGH risk.
+             * Same control on create AND edit (the form is shared): the
+             * backend re-validates every save, so a typo fails here with
+             * the reason instead of silently dropping an alert at 3am.
+             */}
+            <fieldset className="rounded-lg border border-neutral-300 px-3 py-2 text-sm font-semibold text-neutral-600 dark:border-neutral-600 dark:text-neutral-300 sm:col-span-2 dark:bg-white/5">
+              <legend className="px-1">
+                Care team — emailed on HIGH risk
+              </legend>
+              {careTeam.length === 0 ? (
+                <p className="py-1 text-xs font-normal text-neutral-500 dark:text-neutral-400">
+                  No nurses or doctors available — create them on the Staff
+                  screen first. Saving without a team means nobody is emailed
+                  (the dashboard will say so on the call).
+                </p>
+              ) : (
+                <div className="grid gap-1.5 py-1 sm:grid-cols-2">
+                  {careTeam.map((u) => {
+                    const checked = form.assigned_staff.includes(u.username);
+                    return (
+                      <label
+                        key={u.username}
+                        className="flex cursor-pointer items-center gap-2 font-normal text-neutral-700 dark:text-neutral-200"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) =>
+                            setForm({
+                              ...form,
+                              assigned_staff: e.target.checked
+                                ? [...form.assigned_staff, u.username]
+                                : form.assigned_staff.filter(
+                                    (name) => name !== u.username,
+                                  ),
+                            })
+                          }
+                          className="h-4 w-4 accent-brand-700"
+                        />
+                        <span className="font-semibold">{u.username}</span>
+                        <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[11px] font-bold uppercase text-brand-800 dark:bg-[#122347] dark:text-brand-200">
+                          {u.role}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {form.assigned_staff.length === 0 && (
+                <p className="pb-1 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                  Nobody selected — HIGH-risk calls for this patient will email
+                  nobody (WhatsApp still sends).
+                </p>
+              )}
+            </fieldset>
             <label className="text-sm font-semibold text-neutral-600 dark:text-neutral-300 sm:col-span-2">
               Notes
               <textarea
@@ -340,6 +425,7 @@ export default function PatientsPage() {
                   <th className="px-2 py-2">Category</th>
                   <th className="px-2 py-2">Discharged</th>
                   <th className="px-2 py-2">Next check-in</th>
+                  <th className="px-2 py-2">Care team</th>
                   <th className="px-2 py-2">Status</th>
                   <th className="px-2 py-2 text-right">Actions</th>
                 </tr>
@@ -359,6 +445,24 @@ export default function PatientsPage() {
                     </td>
                     <td className="whitespace-nowrap px-2 py-2 text-xs">
                       {nextCalls[p.patient_code] ?? "--"}
+                    </td>
+                    <td
+                      className="max-w-48 px-2 py-2 text-xs"
+                      title={
+                        (p.assigned_staff ?? []).length > 0
+                          ? (p.assigned_staff ?? []).join(", ")
+                          : "Nobody assigned — HIGH-risk calls email nobody"
+                      }
+                    >
+                      {(p.assigned_staff ?? []).length > 0 ? (
+                        <span className="font-semibold text-neutral-700 dark:text-neutral-200">
+                          {(p.assigned_staff ?? []).join(", ")}
+                        </span>
+                      ) : (
+                        <span className="font-semibold text-amber-600 dark:text-amber-400">
+                          none — no email
+                        </span>
+                      )}
                     </td>
                     <td className="px-2 py-2 text-xs">
                       {p.active ? (

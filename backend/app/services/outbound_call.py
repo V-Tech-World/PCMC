@@ -109,6 +109,18 @@ def place_call(
     from_number = _require(
         settings.from_number, "FROM_NUMBER", "The number Zernio calls from, e.g. +1888..."
     )
+    from_number = from_number.strip().replace(" ", "").replace("-", "")
+    if not _E164_RE.match(from_number):
+        # A placeholder such as .env.example's +1888XXXXXXX passes the emptiness
+        # check above but makes Zernio fall back to the account's DEFAULT caller
+        # ID -- the patient then sees a local number instead of the toll-free
+        # line (seen live on the second host: local caller ID + broken media).
+        raise ConfigError(
+            f"FROM_NUMBER={settings.from_number!r} is not a valid E.164 number "
+            "(expected e.g. +18888344640). Put the real number in backend/.env -- "
+            "otherwise Zernio falls back to the account's default caller ID and "
+            "patients see a local number."
+        )
     public_wss = _require(
         settings.public_wss_url,
         "PUBLIC_WSS_URL",
@@ -118,6 +130,21 @@ def place_call(
         raise ConfigError("PUBLIC_WSS_URL must start with wss://")
     if not public_wss.rstrip("/").endswith("/media-stream"):
         raise ConfigError("PUBLIC_WSS_URL must end with /media-stream")
+    if "<" in public_wss or ">" in public_wss or "YOUR-STATIC-DOMAIN" in public_wss.upper():
+        # A placeholder URL passes the two checks above but points nowhere:
+        # Zernio would place the call, play the greeting, then never open the
+        # media WebSocket -- the patient hears the greeting and NO agent voice.
+        raise ConfigError(
+            f"PUBLIC_WSS_URL={public_wss!r} is still a placeholder. Run ngrok on "
+            "THIS machine and paste the real wss://<host>/media-stream URL into "
+            "backend/.env, then restart the backend."
+        )
+    wss_host = public_wss.removeprefix("wss://").split("/", 1)[0]
+    if not re.fullmatch(r"[A-Za-z0-9.:\-]+", wss_host):
+        raise ConfigError(
+            f"PUBLIC_WSS_URL host {wss_host!r} is not a valid hostname -- "
+            "check the ngrok URL in backend/.env."
+        )
 
     token = media_auth.issue_token(config=config)
     forward_to = f"{public_wss}?token={token}"
@@ -180,6 +207,18 @@ def place_call(
         (body[key] for key in ("callId", "call_control_id", "callControlId", "id") if body.get(key)),
         None,
     )
+    # Zernio echoes the caller ID it ACTUALLY used. If that differs from what
+    # .env asked for, the provider fell back to the account default (typically
+    # a local number) -- the patient sees the wrong number, so make it loud.
+    provider_from = str(body.get("from") or "").strip()
+    if provider_from and provider_from.replace(" ", "") != from_number:
+        logger.warning(
+            "Caller ID mismatch: Zernio dialled from %s but FROM_NUMBER=%s -- "
+            "patients will see the wrong number. Fix FROM_NUMBER in backend/.env "
+            "or the account's default caller ID in the Zernio dashboard.",
+            provider_from,
+            from_number,
+        )
     logger.info(
         "Call dialing: to=%s provider_call_id=%s status=%r zernio_ms=%d stream=%s zernio_response=%s",
         number,

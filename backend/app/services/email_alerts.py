@@ -7,14 +7,21 @@ The WhatsApp alert in app/services/alerts.py still goes out exactly as before.
 This module adds a targeted email, so the alert reaches named people in their
 own mailbox instead of only a shared sandbox thread.
 
-WHO GETS IT -- RISK SCORE, NOT ROLE ALONE
------------------------------------------
-    score <  ALERT_DOCTOR_SCORE_THRESHOLD  -> active nurses
-    score >= ALERT_DOCTOR_SCORE_THRESHOLD  -> active nurses AND active doctors
+WHO GETS IT -- THE PATIENT'S ASSIGNED CARE TEAM
+-----------------------------------------------
+Recipients are the nurse(s) and doctor(s) ASSIGNED to the patient (set when
+the patient is created, Patients screen):
 
-"a nurse should call this patient back" and "a doctor needs to know now" are
-different decisions, so they get different thresholds. Admins are never
-score-routed -- they already watch the whole board.
+    patient has an assigned care team -> those nurses AND doctors (always)
+    patient has nobody assigned       -> NO email; an explicit
+                                         `no_assignment` note lands on the
+                                         call row so the dashboard shows
+                                         "nobody was emailed on purpose"
+
+The old risk-score threshold is gone: who to wake up is a care-team decision
+made when the patient is registered, not a score cut-off. Admins are never
+emailable. An assigned account that has since been deleted or deactivated is
+recorded per person as `no_route: ...` instead of being dropped silently.
 
 DELIVERY
 --------
@@ -100,30 +107,16 @@ def email_alerts_configured(settings: Settings | None = None) -> bool:
     )
 
 
-def routed_roles(
-    risk_score: float, settings: Settings | None = None
-) -> tuple[str, ...]:
-    """Which staff roles a HIGH-risk call of this score should reach.
-
-    The whole routing policy in one place, so a test can pin it: below the
-    threshold the nurse on call owns the case; AT or above it a doctor is
-    pulled in as well.
-    """
-    settings = settings or get_settings()
-    try:
-        score = float(risk_score or 0.0)
-        threshold = float(settings.alert_doctor_score_threshold)
-    except (TypeError, ValueError):
-        # A malformed score must not silently escalate -- treat it as a nurse call.
-        logger.warning("Unusable risk score %r -- routing to nurses only", risk_score)
-        return ("nurse",)
-    if score >= threshold:
-        return ("nurse", "doctor")
-    return ("nurse",)
+def _assigned_usernames(patient) -> list[str]:
+    """The care-team usernames assigned to this patient ([] if nobody)."""
+    if patient is None:
+        return []
+    getter = getattr(patient, "get_assigned_staff", None)
+    return list(getter()) if callable(getter) else []
 
 
 def _staff_snapshot() -> list:
-    """Every staff row, for routing.
+    """Every staff row, for resolving assignments.
 
     Wrapped because a database hiccup must never break the call flow -- the
     alert text and the WhatsApp path are independent of this lookup.
@@ -140,24 +133,63 @@ def _staff_snapshot() -> list:
 
 
 def select_recipients(
-    risk_score: float,
-    settings: Settings | None = None,
-    staff: list | None = None,
-) -> list:
-    """The active staff a HIGH-risk call of this score is emailed to."""
-    settings = settings or get_settings()
-    roles = routed_roles(risk_score, settings)
+    patient, staff: list | None = None
+) -> tuple[list, list[dict]]:
+    """Resolve the patient's assigned care team into (reachable, notes).
+
+    reachable: the active nurse/doctor accounts to email, doctors first then
+    nurses then by employee ID -- a deterministic order makes the call row and
+    the logs read the same way every run.
+
+    notes: one visible `no_route` row per assigned username that can no longer
+    be reached (account deleted, deactivated, or no longer a nurse/doctor).
+    Never dropped silently: an assigned person who misses the escalation is
+    exactly the failure this feature exists to prevent.
+    """
+    assigned: list[str] = []
+    for raw in _assigned_usernames(patient):
+        name = (raw or "").strip().lower()
+        if name and name not in assigned:
+            assigned.append(name)
+    if not assigned:
+        return [], []
+
     people = _staff_snapshot() if staff is None else list(staff)
-    chosen = [
-        user
+    by_name = {
+        (getattr(user, "username", "") or "").strip().lower(): user
         for user in people
-        if getattr(user, "active", False)
-        and (getattr(user, "role", "") or "") in roles
-    ]
-    # Doctors first, then nurses, then by employee ID: a deterministic order
-    # makes the call row and the logs read the same way every run.
-    chosen.sort(key=lambda u: (u.role != "doctor", (u.username or "")))
-    return chosen
+    }
+
+    reachable: list = []
+    notes: list[dict] = []
+    for name in assigned:
+        user = by_name.get(name)
+        if user is None:
+            reason = f"no_route: assigned account {name} no longer exists -- reassign the patient"
+        elif not getattr(user, "active", False):
+            reason = f"no_route: assigned account {name} is deactivated -- reactivate it or reassign the patient"
+        elif (getattr(user, "role", "") or "") not in ("nurse", "doctor"):
+            reason = f"no_route: assigned account {name} is no longer a nurse/doctor -- reassign the patient"
+        else:
+            reachable.append(user)
+            continue
+        notes.append(
+            Recipient(
+                username=name,
+                display_name=(getattr(user, "display_name", "") or name)
+                if user is not None
+                else name,
+                role=(getattr(user, "role", "") or "") if user is not None else "",
+                email=((getattr(user, "email", "") or "").strip())
+                if user is not None
+                else "",
+                status=reason,
+            ).to_dict()
+        )
+
+    reachable.sort(key=lambda u: (u.role != "doctor", (u.username or "")))
+    notes.sort(key=lambda row: row["username"])
+    return reachable, notes
 
 
 def format_email_subject(record) -> str:
@@ -400,13 +432,39 @@ def no_route_note() -> dict:
     ).to_dict()
 
 
+def no_assignment_note() -> dict:
+    """Visible placeholder: this patient has no nurse/doctor assigned.
+
+    Per the 5 Oct 2026 rule, an unassigned patient gets NO email at all --
+    the alert is addressed to a care team that was never named. Silence would
+    look identical to a delivery bug, so the row says plainly that nobody was
+    emailed *because nobody is assigned*, and where to fix it. WhatsApp is
+    unaffected either way.
+    """
+    return Recipient(
+        username="",
+        display_name="No care team assigned",
+        role="",
+        email="",
+        status=(
+            "no_assignment: no nurse/doctor is assigned to this patient "
+            "-- assign a care team on the Patients screen"
+        ),
+    ).to_dict()
+
+
 def deliver_alert_emails(
     record,
     patient=None,
     settings: Settings | None = None,
     staff: list | None = None,
 ) -> list[dict]:
-    """Email a finished HIGH-risk call to the score-routed staff.
+    """Email a finished HIGH-risk call to the patient's assigned care team.
+
+    Routing (5 Oct 2026): the patient's assigned nurse(s) + doctors, always --
+    no score threshold. A patient with nobody assigned gets no email and a
+    visible `no_assignment` note on the row; assigned accounts that have since
+    gone away are recorded per person as `no_route`.
 
     Always returns the recipient list (each with a status) for the call row --
     including runs where nothing was actually sent, because "who should have
@@ -418,23 +476,34 @@ def deliver_alert_emails(
     if getattr(record, "risk_level", "") != ALERT_RISK_LEVEL:
         return []
 
-    recipients = select_recipients(
-        getattr(record, "risk_score", 0.0), settings, staff=staff
-    )
-    if not recipients:
+    if not _assigned_usernames(patient):
         logger.warning(
-            "HIGH-risk call %s has no routable nurse/doctor account with an email "
-            "-- create staff on the Staff screen",
+            "HIGH-risk call %s: patient %s has no assigned nurse/doctor -- "
+            "no email sent (assign a care team on the Patients screen)",
             getattr(record, "id", "?"),
+            getattr(patient, "patient_code", None)
+            or getattr(record, "patient_code", "?"),
         )
-        return [no_route_note()]
+        return [no_assignment_note()]
+
+    recipients, unreachable = select_recipients(patient, staff=staff)
+    if not recipients:
+        # Every assigned account is gone/deactivated: the per-person notes say
+        # exactly who was assigned and why they could not be reached.
+        logger.warning(
+            "HIGH-risk call %s: none of the %d assigned staff are reachable "
+            "-- see the no_route rows on the call",
+            getattr(record, "id", "?"),
+            len(unreachable),
+        )
+        return unreachable or [no_route_note()]
 
     if not settings.email_alerts_enabled:
         logger.info(
             "EMAIL_ALERTS_ENABLED=false -- recording %d recipient(s), sending nothing",
             len(recipients),
         )
-        return [_record(user, STATUS_DISABLED) for user in recipients]
+        return [_record(user, STATUS_DISABLED) for user in recipients] + unreachable
 
     if not email_alerts_configured(settings):
         logger.warning(
@@ -442,7 +511,7 @@ def deliver_alert_emails(
             "-- %d recipient(s) recorded, nothing sent",
             len(recipients),
         )
-        return [_record(user, STATUS_NOT_CONFIGURED) for user in recipients]
+        return [_record(user, STATUS_NOT_CONFIGURED) for user in recipients] + unreachable
 
     subject = format_email_subject(record)
     delivered: list[dict] = []
@@ -468,5 +537,7 @@ def deliver_alert_emails(
         else:
             logger.info("Alert email sent to %s <%s>", user.username, address)
             delivered.append(_record(user, STATUS_SENT))
-    return delivered
+    # Assigned-but-unreachable accounts ride along so the row shows the whole
+    # care team: who was emailed, and who could not be.
+    return delivered + unreachable
 

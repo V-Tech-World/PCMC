@@ -179,9 +179,10 @@ class Settings(BaseSettings):
 
     # -- Email alerts (staff-targeted, 4 Oct 2026) -------------------------------
     # A HIGH-risk call is emailed to the care team AND posted to the WhatsApp
-    # thread. Recipients are chosen by RISK SCORE, not by role alone:
-    #   score <  alert_doctor_score_threshold  -> active nurses only
-    #   score >= alert_doctor_score_threshold  -> active nurses AND doctors
+    # thread. Recipients are the nurse(s) and doctor(s) ASSIGNED to that patient
+    # (Patients screen -> care team), set per patient -- no score threshold:
+    # a patient with nobody assigned gets no email (an explicit no_assignment
+    # note lands on the call row; WhatsApp still sends).
     # Each staff member needs an email address on their account (set at
     # creation time).
     #
@@ -195,9 +196,6 @@ class Settings(BaseSettings):
     google_app_password: str = ""          # secret -- never logged
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
-    # Above this risk score, doctors are alerted too. 6 keeps "needs a doctor
-    # now" separate from "a nurse should call back" (HIGH risk starts at 5).
-    alert_doctor_score_threshold: float = 6.0
 
     # -- Scheduler (Step 8) ------------------------------------------------------
     # SCHEDULE_CALLS_ENABLED is the master switch.

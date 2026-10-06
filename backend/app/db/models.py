@@ -83,7 +83,18 @@ class Patient(SQLModel, table=True):
     notes: str = ""
     language_pref: str = "en"                               # en|ta|si (Step 10)
     active: bool = True                                     # false = discharged/archived
+    # Care team for HIGH-risk email alerts (assignment routing): the staff
+    # usernames (nurse/doctor) this patient's alerts are emailed to, as a JSON
+    # list, e.g. ["nurse10", "doc10"]. Empty = nobody is emailed (the call row
+    # then carries an explicit no_assignment note -- WhatsApp still sends).
+    assigned_staff_json: str = Field(default="", sa_column=Column(Text))
     created_at: datetime = Field(default_factory=_utcnow)
+
+    def set_assigned_staff(self, usernames: list[str]) -> None:
+        self.assigned_staff_json = json.dumps(usernames, ensure_ascii=False)
+
+    def get_assigned_staff(self) -> list[str]:
+        return json.loads(self.assigned_staff_json) if self.assigned_staff_json else []
 
 
 class StaffUser(SQLModel, table=True):

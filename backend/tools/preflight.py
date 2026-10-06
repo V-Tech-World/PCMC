@@ -119,10 +119,11 @@ def check_env() -> str:
         _fail("PUBLIC_WSS_URL", "not set -- ngrok URL goes here")
     elif not wss.startswith("wss://") or not wss.rstrip("/").endswith("/media-stream"):
         _fail("PUBLIC_WSS_URL", f"{wss} must start with wss:// and end with /media-stream")
-    elif "YOUR-STATIC-DOMAIN" in wss.upper():
+    elif "YOUR-STATIC-DOMAIN" in wss.upper() or "<" in wss or ">" in wss:
         _fail(
             "PUBLIC_WSS_URL",
-            "still the .env.example placeholder -- put THIS machine's ngrok URL here",
+            f"{wss} is still a placeholder (not a real URL) -- put THIS machine's "
+            "ngrok URL here, or every call will have NO agent voice",
         )
     else:
         host = wss.removeprefix("wss://").split("/", 1)[0]

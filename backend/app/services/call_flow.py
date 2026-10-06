@@ -370,12 +370,20 @@ async def _persist_and_alert(
         outcome = await asyncio.to_thread(
             alerts_service.prepare_alert, record, None, settings
         )
-        # Second channel (4 Oct 2026): a targeted email to the score-routed
-        # staff. Runs regardless of ALERT_DELIVERY -- that switch only governs
-        # the WhatsApp transport -- and never raises, so a dead mailbox cannot
-        # hide the alert text or stop the WhatsApp path.
+        # Second channel (4 Oct 2026, assignment routing 5 Oct 2026): a targeted
+        # email to the patient's ASSIGNED care team (nurses + doctors). Runs
+        # regardless of ALERT_DELIVERY -- that switch only governs the WhatsApp
+        # transport -- and never raises, so a dead mailbox cannot hide the alert
+        # text or stop the WhatsApp path. The patient row carries the assignment;
+        # without it the email records an explicit no_assignment note.
+        patient = await asyncio.to_thread(
+            db_service.find_patient,
+            patient_code=record.patient_code or None,
+            phone_number=record.phone_number or None,
+            database_url=settings.database_url,
+        )
         recipients = await asyncio.to_thread(
-            email_alerts_service.deliver_alert_emails, record, None, settings
+            email_alerts_service.deliver_alert_emails, record, patient, settings
         )
         await asyncio.to_thread(
             db_service.attach_alert,

@@ -43,6 +43,42 @@ class PatientUpsert(BaseModel):
     notes: str = ""
     language_pref: str = "en"         # en | ta | si (Step 10)
     active: bool = True
+    # Care team for HIGH-risk alert emails: staff usernames (nurse/doctor).
+    # None = leave the current assignment unchanged; [] = clear it.
+    assigned_staff: list[str] | None = None
+
+
+def _validate_assigned_staff(usernames: list[str]) -> list[str]:
+    """Normalise the care-team list and refuse unknown/non-nurse-doctor accounts.
+
+    A typo here would silently mean "nobody gets the alert", so it fails at
+    save time (422) instead of at the next HIGH-risk call. Active nurse and
+    doctor accounts only -- admins are never emailed and a deactivated account
+    can not be reached. Returns lower-cased, de-duplicated usernames.
+    """
+    cleaned: list[str] = []
+    for raw in usernames:
+        name = (raw or "").strip().lower()
+        if name and name not in cleaned:
+            cleaned.append(name)
+    if not cleaned:
+        return []
+    known = {u.username: u for u in db_service.list_staff()}
+    invalid: list[str] = []
+    for name in cleaned:
+        user = known.get(name)
+        if user is None:
+            invalid.append(f"{name!r}: no such staff account")
+        elif not user.active:
+            invalid.append(f"{name!r}: account is deactivated")
+        elif user.role not in ("nurse", "doctor"):
+            invalid.append(f"{name!r}: role {user.role!r} cannot be assigned (nurse/doctor only)")
+    if invalid:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid assigned_staff: " + "; ".join(invalid),
+        )
+    return cleaned
 
 
 class CallPatch(BaseModel):
@@ -91,6 +127,7 @@ def _patient_to_dict(p: Patient) -> dict:
         "notes": p.notes,
         "language_pref": p.language_pref,
         "active": p.active,
+        "assigned_staff": p.get_assigned_staff(),
         "created_at": iso_utc(p.created_at),
     }
 
@@ -193,8 +230,8 @@ def send_call_alert(
     patient = db_service.find_patient(patient_code=row.patient_code or None)
     outcome = alerts_service.prepare_alert(row, patient, settings)
     # Email is the second channel (see app/services/email_alerts.py): the
-    # score-routed staff are re-emailed too, so a case that failed earlier
-    # reaches the same people a fresh call would have.
+    # patient's ASSIGNED care team is re-emailed too, so a case that failed
+    # earlier reaches the same people a fresh call would have.
     recipients = email_alerts_service.deliver_alert_emails(row, patient, settings)
     db_service.attach_alert(
         record_id,
@@ -238,6 +275,11 @@ def upsert_patient(
                 + ", ".join(sorted(DIAGNOSIS_CATEGORIES))
             ),
         )
+    assigned = (
+        _validate_assigned_staff(body.assigned_staff)
+        if body.assigned_staff is not None
+        else None
+    )
     action, patient = db_service.upsert_patient(
         patient_code=body.patient_code.strip(),
         name=body.name,
@@ -247,6 +289,7 @@ def upsert_patient(
         notes=body.notes,
         language_pref=body.language_pref,
         active=body.active,
+        assigned_staff=assigned,
     )
     return {"status": action, "patient": _patient_to_dict(patient)}
 
